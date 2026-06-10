@@ -1,100 +1,74 @@
-# chitushka/sso
+# SSO
 
-Release 0.1 Core: базовая production-oriented версия SSO-сервиса на Go.
+Production-ready SSO / Identity Provider written in Go.
 
-## Что реализовано
+Current release: `0.2`.
 
-- HTTP API на Go + chi.
-- PostgreSQL через pgxpool.
-- Конфигурация через environment variables / `.env`.
-- Миграция БД `000001_init`.
-- Локальные пользователи.
-- Argon2id hashing для паролей.
-- Login/logout.
-- JWT access token.
-- HttpOnly session cookie.
-- `/api/v1/auth/me`.
-- Basic admin API пользователей.
-- Audit log для login/user_created.
-- Health endpoints.
-- Dockerfile и docker-compose.
+## Stack
 
-## Запуск
+- Go 1.25
+- PostgreSQL
+- Redis-ready architecture
+- Argon2id password hashing
+- JWT access tokens
+- Server-side sessions
+- LDAP / Active Directory authentication
+- Docker Compose
+
+## Run locally
 
 ```bash
-cp .env.example .env
 docker compose up --build
 ```
 
-Проверка:
+API:
+
+```text
+http://localhost:8080
+```
+
+Health checks:
 
 ```bash
 curl http://localhost:8080/health/live
 curl http://localhost:8080/health/ready
 ```
 
-## Создание первого пользователя
+## Release 0.1 Core
 
-Пока таблица `users` пустая, доступен одноразовый bootstrap endpoint:
+Implemented:
 
-```bash
-curl -X POST http://localhost:8080/api/v1/bootstrap/admin \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"admin","email":"admin@example.com","password":"change-me-123456"}'
-```
+- configuration loader
+- PostgreSQL connection
+- migrations
+- local users
+- Argon2id password hashing
+- login/logout
+- JWT access token issuing
+- server-side sessions
+- audit log
+- protected users API
 
-После создания первого пользователя endpoint начинает возвращать `409 Conflict`.
+## Release 0.2 LDAP
 
-## Login
+Implemented:
 
-```bash
-curl -X POST http://localhost:8080/api/v1/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"password"}'
-```
+- LDAP provider model
+- LDAP provider CRUD API
+- LDAP connection test endpoint
+- LDAP Search + Bind authentication
+- local-auth first, LDAP fallback login flow
+- shadow-user synchronization into `users`
+- LDAP audit events
+- Docker Compose OpenLDAP service for local testing
 
-Ответ содержит:
-
-- `access_token`
-- `session_token`
-- `user`
-
-## Дальнейшие этапы
-
-Release 0.2:
-
-- LDAP / Active Directory provider.
-- LDAP Search + Bind.
-- Shadow users.
-- LDAP group mapping.
-
-Release 0.3:
-
-- OAuth2 Authorization Code Flow.
-- Clients.
-- Authorization codes.
-- Token endpoint.
-- Refresh tokens.
-
-Release 0.4:
-
-- OIDC discovery.
-- ID Token.
-- JWKS.
-- UserInfo.
+LDAP passwords are never stored on local users. Service account bind password is currently stored in DB as plain text for development; Release 0.6 must replace this with encrypted secrets.
 
 ## API
 
-### Health
-
-```text
-GET /health/live
-GET /health/ready
-```
-
 ### Auth
 
-```text
+```http
 POST /api/v1/auth/login
 POST /api/v1/auth/logout
 GET  /api/v1/auth/me
@@ -102,13 +76,9 @@ GET  /api/v1/auth/me
 
 ### Users
 
-All `/api/v1/users/*` endpoints require:
+Protected by bearer token.
 
-```text
-Authorization: Bearer <access_token>
-```
-
-```text
+```http
 GET  /api/v1/users
 POST /api/v1/users
 GET  /api/v1/users/{id}
@@ -116,6 +86,59 @@ PUT  /api/v1/users/{id}
 POST /api/v1/users/{id}/password
 ```
 
-## Важные замечания
+### LDAP Providers
 
-Это Release 0.1 Core. Он уже имеет нормальную структуру и безопасное хранение паролей, но ещё не является полноценным SSO в смысле OAuth2/OIDC. Протокольная часть будет добавляться в следующих релизах.
+Protected by bearer token.
+
+```http
+GET    /api/v1/ldap/providers
+POST   /api/v1/ldap/providers
+GET    /api/v1/ldap/providers/{id}
+PUT    /api/v1/ldap/providers/{id}
+DELETE /api/v1/ldap/providers/{id}
+POST   /api/v1/ldap/providers/{id}/test
+```
+
+Example LDAP provider for the local OpenLDAP container:
+
+```json
+{
+  "name": "local-openldap",
+  "host": "ldap",
+  "port": 389,
+  "use_tls": false,
+  "start_tls": false,
+  "bind_dn": "cn=admin,dc=example,dc=org",
+  "bind_password": "admin",
+  "base_dn": "dc=example,dc=org",
+  "user_filter": "(&(objectClass=inetOrgPerson)(uid={username}))",
+  "username_attribute": "uid",
+  "email_attribute": "mail",
+  "display_name_attribute": "cn",
+  "enabled": true
+}
+```
+
+## LDAP authentication flow
+
+```text
+1. User submits username/password to /api/v1/auth/login
+2. SSO checks local user credentials first
+3. If local authentication does not match, SSO tries enabled LDAP providers
+4. LDAP provider performs service account bind
+5. LDAP provider searches user by configured filter
+6. LDAP provider binds as found user DN using submitted password
+7. SSO creates or updates local shadow user
+8. SSO creates server-side session and JWT access token
+```
+
+## Security notes
+
+Current development limitations:
+
+- LDAP bind password is not encrypted yet
+- rate limiting is not implemented yet
+- MFA is not implemented yet
+- OAuth2/OIDC are planned for later releases
+
+Do not expose this release to production traffic without Release 0.6 security hardening.

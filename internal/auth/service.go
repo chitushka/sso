@@ -6,9 +6,14 @@ import (
 	"time"
 
 	"github.com/chitushka/sso/internal/audit"
+	"github.com/chitushka/sso/internal/ldap"
 	"github.com/chitushka/sso/internal/storage"
 	"github.com/chitushka/sso/internal/users"
 )
+
+type LDAPAuthenticator interface {
+	Authenticate(ctx context.Context, username, password, ip, ua string) (ldap.Identity, error)
+}
 
 type Service struct {
 	users      users.Repository
@@ -16,11 +21,12 @@ type Service struct {
 	audit      audit.Repository
 	passwords  PasswordHasher
 	tokens     JWTIssuer
+	ldap       LDAPAuthenticator
 	sessionTTL time.Duration
 }
 
-func NewService(users users.Repository, sessions SessionRepository, audit audit.Repository, passwords PasswordHasher, tokens JWTIssuer, sessionTTL time.Duration) *Service {
-	return &Service{users: users, sessions: sessions, audit: audit, passwords: passwords, tokens: tokens, sessionTTL: sessionTTL}
+func NewService(users users.Repository, sessions SessionRepository, audit audit.Repository, passwords PasswordHasher, tokens JWTIssuer, ldap LDAPAuthenticator, sessionTTL time.Duration) *Service {
+	return &Service{users: users, sessions: sessions, audit: audit, passwords: passwords, tokens: tokens, ldap: ldap, sessionTTL: sessionTTL}
 }
 
 type LoginInput struct {
@@ -41,21 +47,70 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 var ErrUserBlocked = errors.New("user is not active")
 
 func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error) {
-	u, err := s.users.FindByUsername(ctx, in.Username)
+	u, err := s.authenticateLocal(ctx, in)
+	if err == nil {
+		return s.issueLogin(ctx, u, in)
+	}
+	if !errors.Is(err, ErrInvalidCredentials) {
+		return LoginResult{}, err
+	}
+	if s.ldap == nil {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+
+	identity, ldapErr := s.ldap.Authenticate(ctx, in.Username, in.Password, in.IP, in.UserAgent)
+	if ldapErr != nil {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	u, err = s.syncLDAPUser(ctx, identity)
 	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return LoginResult{}, ErrInvalidCredentials
-		}
 		return LoginResult{}, err
 	}
 	if u.Status != users.StatusActive {
 		return LoginResult{}, ErrUserBlocked
 	}
+	return s.issueLogin(ctx, u, in)
+}
+
+func (s *Service) authenticateLocal(ctx context.Context, in LoginInput) (users.User, error) {
+	u, err := s.users.FindByUsername(ctx, in.Username)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return users.User{}, ErrInvalidCredentials
+		}
+		return users.User{}, err
+	}
+	if u.Source != users.SourceLocal || u.PasswordHash == "" {
+		return users.User{}, ErrInvalidCredentials
+	}
+	if u.Status != users.StatusActive {
+		return users.User{}, ErrUserBlocked
+	}
 	ok, err := s.passwords.Verify(in.Password, u.PasswordHash)
 	if err != nil || !ok {
 		_ = s.audit.Write(ctx, audit.Event{Action: "login_failed", TargetType: "user", TargetID: in.Username, IP: in.IP, UserAgent: in.UserAgent})
-		return LoginResult{}, ErrInvalidCredentials
+		return users.User{}, ErrInvalidCredentials
 	}
+	return u, nil
+}
+
+func (s *Service) syncLDAPUser(ctx context.Context, identity ldap.Identity) (users.User, error) {
+	email := identity.Email
+	if email == "" {
+		email = identity.Username + "@ldap.local"
+	}
+	providerID := identity.ProviderID
+	return s.users.SyncLDAPUser(ctx, users.User{
+		Username:       identity.Username,
+		Email:          email,
+		Status:         users.StatusActive,
+		Source:         users.SourceLDAP,
+		LDAPProviderID: &providerID,
+		LDAPDN:         identity.DN,
+	})
+}
+
+func (s *Service) issueLogin(ctx context.Context, u users.User, in LoginInput) (LoginResult, error) {
 	access, accessExp, err := s.tokens.Issue(u)
 	if err != nil {
 		return LoginResult{}, err
