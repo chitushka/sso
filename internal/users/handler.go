@@ -17,30 +17,6 @@ type setPasswordRequest struct {
 
 func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler) {
 
-	r.Post("/api/v1/bootstrap/admin", func(w http.ResponseWriter, r *http.Request) {
-		count, err := svc.repo.Count(r.Context())
-		if err != nil {
-			httpx.Error(w, http.StatusInternalServerError, "failed to check bootstrap state")
-			return
-		}
-		if count > 0 {
-			httpx.Error(w, http.StatusConflict, "bootstrap is already completed")
-			return
-		}
-		var req CreateUserInput
-		if err := httpx.Decode(r, &req); err != nil {
-			httpx.Error(w, http.StatusBadRequest, "invalid json body")
-			return
-		}
-		req.Status = StatusActive
-		u, err := svc.Create(r.Context(), req, r.RemoteAddr, r.UserAgent())
-		if err != nil {
-			httpx.Error(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		httpx.JSON(w, http.StatusCreated, u)
-	})
-
 	r.Route("/api/v1/users", func(r chi.Router) {
 		r.Use(bearerAuth)
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) {

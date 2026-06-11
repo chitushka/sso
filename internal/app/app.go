@@ -7,10 +7,12 @@ import (
 
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
+	"github.com/chitushka/sso/internal/bootstrap"
 	"github.com/chitushka/sso/internal/config"
 	"github.com/chitushka/sso/internal/health"
 	"github.com/chitushka/sso/internal/ldap"
 	"github.com/chitushka/sso/internal/middleware"
+	"github.com/chitushka/sso/internal/oauth"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -36,11 +38,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	sessionRepo := auth.NewPostgresSessionRepository(pool)
 	auditRepo := audit.NewPostgresRepository(pool)
 	ldapRepo := ldap.NewPostgresRepository(pool)
-	ldapSvc := ldap.NewService(ldapRepo, ldap.NewClient(), auditRepo)
+	oauthRepo := oauth.NewPostgresRepository(pool)
 	passwords := auth.NewArgon2idHasher()
 	tokens := auth.NewJWTIssuer([]byte(cfg.Auth.JWTSecret), cfg.Auth.AccessTokenTTL)
+	ldapClient := ldap.NewClient()
+	ldapSvc := ldap.NewService(ldapRepo, ldapClient, auditRepo)
 	authSvc := auth.NewService(userRepo, sessionRepo, auditRepo, passwords, tokens, ldapSvc, cfg.Auth.SessionTTL)
 	userSvc := users.NewService(userRepo, passwords, auditRepo)
+	bootstrapSvc := bootstrap.NewService(userRepo, passwords, auditRepo)
+	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, auditRepo, passwords, []byte(cfg.Auth.JWTSecret), cfg.Auth.AccessTokenTTL)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -54,11 +60,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		MaxAge:           300,
 	}))
 
-	bearerAuth := auth.BearerAuth([]byte(cfg.Auth.JWTSecret))
 	health.RegisterRoutes(r, pool)
+	bootstrap.RegisterRoutes(r, bootstrapSvc)
 	auth.RegisterRoutes(r, authSvc, userRepo, []byte(cfg.Auth.JWTSecret))
-	users.RegisterRoutes(r, userSvc, bearerAuth)
-	ldap.RegisterRoutes(r, ldapSvc, bearerAuth)
+	users.RegisterRoutes(r, userSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)))
+	ldap.RegisterRoutes(r, ldapSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)))
+	oauth.RegisterRoutes(r, oauthSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)))
 
 	return &App{pool: pool, router: r}, nil
 }

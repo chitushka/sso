@@ -1,21 +1,60 @@
 # SSO
 
-Production-ready SSO / Identity Provider written in Go.
+Production-ready SSO / IAM service written in Go.
 
-Current release: `0.2`.
+Current release: **0.3 - OAuth2 Authorization Server**.
 
 ## Stack
 
 - Go 1.25
 - PostgreSQL
 - Redis-ready architecture
-- Argon2id password hashing
-- JWT access tokens
-- Server-side sessions
-- LDAP / Active Directory authentication
+- REST API
+- Argon2id
+- JWT
+- LDAP / Active Directory Search + Bind
+- OAuth2 Authorization Code Flow
 - Docker Compose
 
-## Run locally
+## Releases
+
+### Release 0.1 - Core
+
+- Configuration loader
+- PostgreSQL connection
+- Health checks
+- Local users
+- Argon2id password hashing
+- Login / logout
+- Server-side sessions
+- JWT access token
+- Audit log
+- Basic users API
+
+### Release 0.2 - LDAP
+
+- LDAP provider CRUD
+- Active Directory compatible Search + Bind
+- LDAP connection test endpoint
+- LDAP shadow users
+- LDAP login fallback after local auth failure
+- LDAP audit events
+- OpenLDAP service in Docker Compose
+
+### Release 0.3 - OAuth2
+
+- OAuth client CRUD
+- Confidential and public clients
+- Exact redirect URI validation
+- Authorization Code Flow
+- PKCE S256 for public clients
+- One-time authorization codes
+- Hashed authorization code storage
+- Token endpoint for `authorization_code`
+- JWT OAuth2 access tokens with `client_id` and `scope`
+- OAuth audit events
+
+## Run
 
 ```bash
 docker compose up --build
@@ -27,118 +66,189 @@ API:
 http://localhost:8080
 ```
 
-Health checks:
+## Migrations
 
-```bash
-curl http://localhost:8080/health/live
-curl http://localhost:8080/health/ready
+Migrations are stored in `migrations/`.
+
+```text
+000001_init
+000002_ldap
+000003_oauth
 ```
 
-## Release 0.1 Core
+## OAuth2 Example
 
-Implemented:
+### 1. Create local admin/user and login
 
-- configuration loader
-- PostgreSQL connection
-- migrations
-- local users
-- Argon2id password hashing
-- login/logout
-- JWT access token issuing
-- server-side sessions
-- audit log
-- protected users API
-
-## Release 0.2 LDAP
-
-Implemented:
-
-- LDAP provider model
-- LDAP provider CRUD API
-- LDAP connection test endpoint
-- LDAP Search + Bind authentication
-- local-auth first, LDAP fallback login flow
-- shadow-user synchronization into `users`
-- LDAP audit events
-- Docker Compose OpenLDAP service for local testing
-
-LDAP passwords are never stored on local users. Service account bind password is currently stored in DB as plain text for development; Release 0.6 must replace this with encrypted secrets.
-
-## API
-
-### Auth
+Use existing Release 0.1 endpoints:
 
 ```http
 POST /api/v1/auth/login
-POST /api/v1/auth/logout
-GET  /api/v1/auth/me
-```
+Content-Type: application/json
 
-### Users
-
-Protected by bearer token.
-
-```http
-GET  /api/v1/users
-POST /api/v1/users
-GET  /api/v1/users/{id}
-PUT  /api/v1/users/{id}
-POST /api/v1/users/{id}/password
-```
-
-### LDAP Providers
-
-Protected by bearer token.
-
-```http
-GET    /api/v1/ldap/providers
-POST   /api/v1/ldap/providers
-GET    /api/v1/ldap/providers/{id}
-PUT    /api/v1/ldap/providers/{id}
-DELETE /api/v1/ldap/providers/{id}
-POST   /api/v1/ldap/providers/{id}/test
-```
-
-Example LDAP provider for the local OpenLDAP container:
-
-```json
 {
-  "name": "local-openldap",
-  "host": "ldap",
-  "port": 389,
-  "use_tls": false,
-  "start_tls": false,
-  "bind_dn": "cn=admin,dc=example,dc=org",
-  "bind_password": "admin",
-  "base_dn": "dc=example,dc=org",
-  "user_filter": "(&(objectClass=inetOrgPerson)(uid={username}))",
-  "username_attribute": "uid",
-  "email_attribute": "mail",
-  "display_name_attribute": "cn",
-  "enabled": true
+  "username": "admin",
+  "password": "password"
 }
 ```
 
-## LDAP authentication flow
+The response returns `access_token` and sets `sso_session` cookie.
 
-```text
-1. User submits username/password to /api/v1/auth/login
-2. SSO checks local user credentials first
-3. If local authentication does not match, SSO tries enabled LDAP providers
-4. LDAP provider performs service account bind
-5. LDAP provider searches user by configured filter
-6. LDAP provider binds as found user DN using submitted password
-7. SSO creates or updates local shadow user
-8. SSO creates server-side session and JWT access token
+### 2. Create OAuth client
+
+```http
+POST /api/v1/oauth/clients
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "client_id": "app1",
+  "name": "Application 1",
+  "type": "confidential",
+  "redirect_uris": ["http://localhost:9000/callback"],
+  "allowed_scopes": ["read", "profile"]
+}
 ```
 
-## Security notes
+For confidential clients the response includes `client_secret` once. Store it securely.
 
-Current development limitations:
+For public clients use:
 
-- LDAP bind password is not encrypted yet
-- rate limiting is not implemented yet
-- MFA is not implemented yet
-- OAuth2/OIDC are planned for later releases
+```json
+{
+  "client_id": "spa",
+  "name": "SPA",
+  "type": "public",
+  "redirect_uris": ["http://localhost:5173/callback"],
+  "allowed_scopes": ["read", "profile"]
+}
+```
 
-Do not expose this release to production traffic without Release 0.6 security hardening.
+### 3. Authorize
+
+```http
+GET /oauth2/authorize?response_type=code&client_id=app1&redirect_uri=http://localhost:9000/callback&scope=read%20profile&state=abc
+Cookie: sso_session=<session_cookie>
+```
+
+Successful response:
+
+```http
+302 Location: http://localhost:9000/callback?code=<code>&state=abc
+```
+
+### 4. Exchange code
+
+```http
+POST /oauth2/token
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic base64(app1:client_secret)
+
+grant_type=authorization_code&code=<code>&redirect_uri=http://localhost:9000/callback
+```
+
+Response:
+
+```json
+{
+  "access_token": "...",
+  "token_type": "Bearer",
+  "expires_in": 900,
+  "scope": "read profile"
+}
+```
+
+## PKCE for public clients
+
+Public clients must use PKCE S256.
+
+Authorize request must include:
+
+```text
+code_challenge=<base64url(sha256(code_verifier))>
+code_challenge_method=S256
+```
+
+Token request must include:
+
+```text
+code_verifier=<original verifier>
+```
+
+## Security Notes
+
+- Passwords are hashed with Argon2id.
+- LDAP passwords are never stored.
+- OAuth authorization codes are stored only as SHA-256 hashes.
+- Client secrets are stored as Argon2id hashes.
+- Redirect URI matching is exact.
+- Public clients require PKCE S256.
+- Access tokens are JWT signed with HS256 in Release 0.3.
+
+## Next Release
+
+Release 0.4 will add OpenID Connect:
+
+- Discovery endpoint
+- JWKS endpoint
+- ID Token
+- UserInfo endpoint
+- OIDC scopes and claims
+
+## Release 0.3.1 - Bootstrap Admin Fix
+
+This patch separates first-run initialization from the regular user management API.
+
+### Bootstrap status
+
+```bash
+curl http://localhost:8080/api/v1/bootstrap/status
+```
+
+Response before initialization:
+
+```json
+{
+  "initialized": false
+}
+```
+
+Response after at least one user exists:
+
+```json
+{
+  "initialized": true
+}
+```
+
+### Create the first administrator
+
+```bash
+curl -X POST http://localhost:8080/api/v1/bootstrap \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "admin",
+    "email": "admin@example.com",
+    "password": "StrongPassword123"
+  }'
+```
+
+Rules:
+
+- The endpoint works only while the `users` table is empty.
+- Password must contain at least 12 characters.
+- The created user has `source=local` and `status=active`.
+- After the first user has been created, repeated bootstrap calls return `409 Conflict`.
+
+### Regular user creation
+
+`POST /api/v1/users` no longer contains bootstrap logic. It is a regular administrative endpoint protected by Bearer authentication.
+
+### Fixed in this patch
+
+- Removed one-shot bootstrap behavior from `internal/users/handler.go`.
+- Added `internal/bootstrap` package.
+- Added `GET /api/v1/bootstrap/status`.
+- Added `POST /api/v1/bootstrap`.
+- Fixed LDAP service composition in `internal/app/app.go` by passing `ldap.NewClient()` to `ldap.NewService(...)`.
+- Added bootstrap unit tests.
