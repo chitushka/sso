@@ -6,10 +6,10 @@ import (
 	"net/http"
 )
 
-func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler) {
+func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler, require func(string, string) func(http.Handler) http.Handler) {
 	r.Route("/api/v1/oauth/clients", func(r chi.Router) {
 		r.Use(bearerAuth)
-		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		r.With(require("oauth_clients", "read")).Get("/", func(w http.ResponseWriter, r *http.Request) {
 			out, err := svc.ListClients(r.Context())
 			if err != nil {
 				httpx.Error(w, 500, "failed to list clients")
@@ -17,7 +17,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			httpx.JSON(w, 200, out)
 		})
-		r.Post("/", func(w http.ResponseWriter, r *http.Request) {
+		r.With(require("oauth_clients", "create")).Post("/", func(w http.ResponseWriter, r *http.Request) {
 			var req CreateClientInput
 			if err := httpx.Decode(r, &req); err != nil {
 				httpx.Error(w, 400, "invalid json body")

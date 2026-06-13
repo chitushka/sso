@@ -76,3 +76,54 @@ POST /oauth2/token
 - Bootstrap fix
 - LDAP DI fix
 - Go 1.25.0 baseline
+
+## Release 0.5 - RBAC
+
+Release 0.5 adds role-based access control.
+
+### New concepts
+
+- Role: named collection of permissions.
+- Permission: resource/action pair such as `users:create`.
+- User role assignment: users receive permissions through roles.
+
+### Default roles
+
+Migration `000005_rbac` creates:
+
+- `admin` - full access to all current permissions.
+- `user` - regular user role.
+
+For compatibility with previous releases, if the database already contains users and no role assignments exist, the migration grants `admin` to the earliest created user.
+
+### New API
+
+Protected by Bearer token and RBAC middleware:
+
+```http
+GET    /api/v1/roles
+POST   /api/v1/roles
+GET    /api/v1/permissions
+GET    /api/v1/roles/{roleID}/permissions
+POST   /api/v1/roles/{roleID}/permissions
+DELETE /api/v1/roles/{roleID}/permissions/{permissionID}
+GET    /api/v1/users/{userID}/roles
+POST   /api/v1/users/{userID}/roles
+DELETE /api/v1/users/{userID}/roles/{roleID}
+```
+
+### Bootstrap behavior
+
+`POST /api/v1/bootstrap` now assigns the `admin` role to the first created administrator when RBAC migrations have been applied.
+
+### Protected resources
+
+The following admin APIs now require permissions:
+
+- `users:*`
+- `roles:*`
+- `permissions:*`
+- `ldap:*`
+- `oauth_clients:*`
+
+Run migrations before testing v0.5.

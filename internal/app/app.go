@@ -11,6 +11,7 @@ import (
 	"github.com/chitushka/sso/internal/middleware"
 	"github.com/chitushka/sso/internal/oauth"
 	"github.com/chitushka/sso/internal/oidc"
+	"github.com/chitushka/sso/internal/rbac"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -36,6 +37,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	userRepo := users.NewPostgresRepository(pool)
 	sessionRepo := auth.NewPostgresSessionRepository(pool)
 	auditRepo := audit.NewPostgresRepository(pool)
+	rbacRepo := rbac.NewPostgresRepository(pool)
+	rbacSvc := rbac.NewService(rbacRepo, auditRepo)
 	passwords := auth.NewArgon2idHasher()
 	tokens := auth.NewJWTIssuer([]byte(cfg.Auth.JWTSecret), cfg.Auth.AccessTokenTTL)
 	ldapRepo := ldap.NewPostgresRepository(pool)
@@ -44,7 +47,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	ldapAuth := ldap.NewAuthenticator(ldapRepo, ldapClient, userRepo, auditRepo)
 	authSvc := auth.NewService(userRepo, sessionRepo, auditRepo, passwords, tokens, cfg.Auth.SessionTTL).WithLDAP(ldapAuth)
 	userSvc := users.NewService(userRepo, passwords, auditRepo)
-	bootstrapSvc := bootstrap.NewService(userRepo, passwords, auditRepo)
+	bootstrapSvc := bootstrap.NewService(userRepo, passwords, rbacRepo, auditRepo)
 	oauthRepo := oauth.NewPostgresRepository(pool, passwords)
 	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, tokens, auditRepo)
 	oidcKeys := oidc.NewPostgresKeyStore(pool)
@@ -57,11 +60,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	r.Use(middleware.Logger(logger))
 	r.Use(cors.Handler(cors.Options{AllowedOrigins: cfg.CORS.AllowedOrigins, AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}, AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"}, AllowCredentials: true, MaxAge: 300}))
 	health.RegisterRoutes(r, pool)
+	require := func(resource, action string) func(http.Handler) http.Handler {
+		return rbac.RequirePermission(rbacRepo, resource, action)
+	}
 	bootstrap.RegisterRoutes(r, bootstrapSvc)
 	auth.RegisterRoutes(r, authSvc, userRepo, []byte(cfg.Auth.JWTSecret))
-	users.RegisterRoutes(r, userSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)))
-	ldap.RegisterRoutes(r, ldapSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)))
-	oauth.RegisterRoutes(r, oauthSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)))
+	users.RegisterRoutes(r, userSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)), require)
+	ldap.RegisterRoutes(r, ldapSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)), require)
+	oauth.RegisterRoutes(r, oauthSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)), require)
+	rbac.RegisterRoutes(r, rbacSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)), rbacRepo)
 	oidc.RegisterRoutes(r, oidcSvc, userRepo, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)))
 	return &App{pool: pool, router: r}, nil
 }

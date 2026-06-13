@@ -23,3 +23,21 @@ v0.4 uses RSA 2048 keys and RS256. Active signing keys are stored in PostgreSQL 
 ## Frontend decision
 
 Admin UI must use Vue 3 + Bootstrap 5 + JavaScript, HTML, CSS. TypeScript is intentionally excluded.
+
+## RBAC Architecture
+
+Release 0.5 introduces RBAC as the primary authorization model.
+
+```text
+User -> UserRole -> Role -> RolePermission -> Permission
+```
+
+Permissions are resource/action pairs:
+
+```text
+users:create
+ldap:test
+oauth_clients:create
+```
+
+Authorization is enforced in HTTP middleware after JWT authentication. Domain services remain independent from HTTP middleware and can still be tested directly.

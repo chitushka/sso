@@ -6,10 +6,10 @@ import (
 	"net/http"
 )
 
-func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler) {
+func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler, require func(string, string) func(http.Handler) http.Handler) {
 	r.Route("/api/v1/ldap/providers", func(r chi.Router) {
 		r.Use(bearerAuth)
-		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		r.With(require("ldap", "read")).Get("/", func(w http.ResponseWriter, r *http.Request) {
 			out, err := svc.List(r.Context())
 			if err != nil {
 				httpx.Error(w, 500, "failed to list providers")
@@ -17,7 +17,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			httpx.JSON(w, 200, out)
 		})
-		r.Post("/", func(w http.ResponseWriter, r *http.Request) {
+		r.With(require("ldap", "create")).Post("/", func(w http.ResponseWriter, r *http.Request) {
 			var p Provider
 			if err := httpx.Decode(r, &p); err != nil {
 				httpx.Error(w, 400, "invalid json body")
@@ -30,7 +30,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			httpx.JSON(w, 201, out)
 		})
-		r.Post("/test", func(w http.ResponseWriter, r *http.Request) {
+		r.With(require("ldap", "test")).Post("/test", func(w http.ResponseWriter, r *http.Request) {
 			var p Provider
 			if err := httpx.Decode(r, &p); err != nil {
 				httpx.Error(w, 400, "invalid json body")

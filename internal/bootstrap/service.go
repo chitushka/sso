@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"github.com/chitushka/sso/internal/audit"
+	"github.com/chitushka/sso/internal/rbac"
+	"github.com/chitushka/sso/internal/storage"
 	"github.com/chitushka/sso/internal/users"
 	"strings"
 )
@@ -14,11 +16,12 @@ type PasswordHasher interface {
 type Service struct {
 	users     users.Repository
 	passwords PasswordHasher
+	rbac      rbac.Repository
 	audit     audit.Repository
 }
 
-func NewService(users users.Repository, passwords PasswordHasher, audit audit.Repository) *Service {
-	return &Service{users: users, passwords: passwords, audit: audit}
+func NewService(users users.Repository, passwords PasswordHasher, rbacRepo rbac.Repository, audit audit.Repository) *Service {
+	return &Service{users: users, passwords: passwords, rbac: rbacRepo, audit: audit}
 }
 
 type Status struct {
@@ -55,6 +58,17 @@ func (s *Service) CreateAdmin(ctx context.Context, in CreateAdminInput, ip, ua s
 	if err != nil {
 		_ = s.audit.Write(ctx, audit.Event{Action: "bootstrap_failed", TargetType: "user", TargetID: in.Username, IP: ip, UserAgent: ua})
 		return users.User{}, err
+	}
+	if s.rbac != nil {
+		adminRole, err := s.rbac.FindRoleByCode(ctx, "admin")
+		if err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return users.User{}, err
+		}
+		if err == nil {
+			if err := s.rbac.AssignRoleToUser(ctx, u.ID, adminRole.ID); err != nil {
+				return users.User{}, err
+			}
+		}
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &u.ID, Action: "bootstrap_completed", TargetType: "user", TargetID: u.ID.String(), IP: ip, UserAgent: ua})
 	return u, nil

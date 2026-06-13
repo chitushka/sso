@@ -35,7 +35,7 @@ func Load() (Config, error) {
 		HTTP: HTTPConfig{Addr: env("SSO_HTTP_ADDR", ":8080")},
 		DB:   DBConfig{URL: env("SSO_DB_URL", "postgres://sso:sso@localhost:5432/sso?sslmode=disable")},
 		Auth: AuthConfig{JWTSecret: env("SSO_JWT_SECRET", "dev-secret-change-me"), AccessTokenTTL: dur("SSO_ACCESS_TOKEN_TTL", 15*time.Minute), SessionTTL: dur("SSO_SESSION_TTL", 24*time.Hour)},
-		CORS: CORSConfig{AllowedOrigins: split(env("SSO_CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080"))},
+		CORS: CORSConfig{AllowedOrigins: split(env("SSO_CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8080"))},
 		OIDC: OIDCConfig{Issuer: env("SSO_ISSUER", "http://localhost:8080"), KeyRotationEnabled: boolean("SSO_OIDC_KEY_ROTATION_ENABLED", false)},
 	}, nil
 }

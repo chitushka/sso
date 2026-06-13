@@ -39,3 +39,22 @@ Stack:
 - Bootstrap 5
 - HTML
 - CSS
+
+## Release 0.5 - RBAC
+
+Status: GENERATED
+
+Implemented:
+
+- roles table
+- permissions table
+- role_permissions table
+- user_roles table
+- default admin/user roles
+- default permission set
+- RBAC middleware
+- role API
+- permission API
+- user-role assignment API
+- bootstrap admin role assignment
+- permission checks for users, LDAP provider and OAuth client admin APIs

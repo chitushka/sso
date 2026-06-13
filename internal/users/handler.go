@@ -11,10 +11,10 @@ import (
 	"strings"
 )
 
-func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler) {
+func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler, require func(string, string) func(http.Handler) http.Handler) {
 	r.Route("/api/v1/users", func(r chi.Router) {
 		r.Use(bearerAuth)
-		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		r.With(require("users", "read")).Get("/", func(w http.ResponseWriter, r *http.Request) {
 			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 			offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 			out, err := svc.List(r.Context(), limit, offset)
@@ -24,7 +24,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			httpx.JSON(w, 200, out)
 		})
-		r.Post("/", func(w http.ResponseWriter, r *http.Request) {
+		r.With(require("users", "create")).Post("/", func(w http.ResponseWriter, r *http.Request) {
 			var req CreateUserInput
 			if err := httpx.Decode(r, &req); err != nil {
 				httpx.Error(w, 400, "invalid json body")
@@ -41,7 +41,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			httpx.JSON(w, 201, u)
 		})
-		r.Get("/{id}", func(w http.ResponseWriter, r *http.Request) {
+		r.With(require("users", "read")).Get("/{id}", func(w http.ResponseWriter, r *http.Request) {
 			id, err := uuid.Parse(chi.URLParam(r, "id"))
 			if err != nil {
 				httpx.Error(w, 400, "invalid id")
@@ -54,7 +54,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			httpx.JSON(w, 200, u)
 		})
-		r.Put("/{id}", func(w http.ResponseWriter, r *http.Request) {
+		r.With(require("users", "update")).Put("/{id}", func(w http.ResponseWriter, r *http.Request) {
 			id, err := uuid.Parse(chi.URLParam(r, "id"))
 			if err != nil {
 				httpx.Error(w, 400, "invalid id")
