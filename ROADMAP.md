@@ -1,65 +1,41 @@
 # ROADMAP.md
 
-## Release 0.1 - Core
+## v0.4 — OpenID Connect
 
-Status: completed
+Status: generated for testing.
 
-- Configuration
-- PostgreSQL
-- Local users
-- Argon2id passwords
-- Sessions
-- Audit log
-- REST API
-- Docker support
-
-## Release 0.2 - LDAP
-
-Status: completed / under testing
-
-- LDAP providers
-- Active Directory compatible Search + Bind
-- LDAP connection test
-- LDAP shadow users
-- LDAP login fallback
-
-## Release 0.3 - OAuth2 Authorization Server
-
-Status: completed / under testing
-
-- OAuth clients
-- Authorization Code Flow
-- PKCE S256
-- `/oauth2/authorize`
-- `/oauth2/token`
-- JWT access token
-
-## Release 0.3.1 - Bootstrap Admin Fix
-
-Status: completed
-
-- Moved first-admin bootstrap from users API to dedicated bootstrap module.
-- Added `GET /api/v1/bootstrap/status`.
-- Added `POST /api/v1/bootstrap`.
-- Fixed LDAP service dependency injection in app composition root.
-
-## Release 0.4 - OpenID Connect
-
-Planned:
-
-- Discovery endpoint
-- JWKS endpoint
+Scope:
+- OIDC Discovery
+- JWKS
 - ID Token
-- UserInfo endpoint
-- OIDC claims mapping
+- UserInfo
+- nonce
+- RSA 2048 / RS256
 
-## Release 0.5 - RBAC
+## v0.5 — RBAC
 
 Planned:
+- roles
+- permissions
+- user-role assignments
+- role-permission assignments
+- bootstrap admin role
+- authorization middleware
 
-- Roles
-- Permissions
-- User-role assignment
-- Role-permission assignment
-- Admin-only user management
-- Bootstrap creates default admin role and assigns it to first admin
+## v0.6 — Security Hardening
+
+Planned:
+- rate limiting
+- brute force protection
+- refresh token rotation
+- secret encryption
+- stricter audit policy
+
+## v0.7 — Admin UI
+
+Stack:
+- Vue 3
+- JavaScript
+- Bootstrap 5
+- HTML
+- CSS

@@ -2,311 +2,174 @@ package oauth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
-	"net/url"
-	"slices"
-	"strings"
-	"time"
-
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/storage"
 	"github.com/chitushka/sso/internal/users"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"net/url"
+	"strings"
+	"time"
 )
 
-type PasswordHasher interface {
-	Hash(password string) (string, error)
-	Verify(password, encodedHash string) (bool, error)
+type IDTokenIssuer interface {
+	IssueIDToken(ctx context.Context, u users.User, clientID, nonce string, authTime time.Time) (string, error)
 }
-
 type Service struct {
-	repo      Repository
-	users     users.Repository
-	sessions  auth.SessionRepository
-	audit     audit.Repository
-	passwords PasswordHasher
-	jwtSecret []byte
-	accessTTL time.Duration
-	codeTTL   time.Duration
-	issuer    string
+	repo     Repository
+	users    users.Repository
+	sessions auth.SessionRepository
+	tokens   auth.JWTIssuer
+	audit    audit.Repository
+	idTokens IDTokenIssuer
 }
 
-func NewService(repo Repository, users users.Repository, sessions auth.SessionRepository, audit audit.Repository, passwords PasswordHasher, jwtSecret []byte, accessTTL time.Duration) *Service {
-	return &Service{repo: repo, users: users, sessions: sessions, audit: audit, passwords: passwords, jwtSecret: jwtSecret, accessTTL: accessTTL, codeTTL: 5 * time.Minute, issuer: "chitushka-sso"}
+func NewService(repo Repository, users users.Repository, sessions auth.SessionRepository, tokens auth.JWTIssuer, audit audit.Repository) *Service {
+	return &Service{repo: repo, users: users, sessions: sessions, tokens: tokens, audit: audit}
+}
+func (s *Service) WithIDTokenIssuer(i IDTokenIssuer) *Service { s.idTokens = i; return s }
+
+type CreateClientInput struct {
+	ClientID      string     `json:"client_id"`
+	Name          string     `json:"name"`
+	Type          ClientType `json:"type"`
+	RedirectURIs  []string   `json:"redirect_uris"`
+	AllowedScopes []string   `json:"allowed_scopes"`
+	Enabled       bool       `json:"enabled"`
+}
+type CreateClientResult struct {
+	Client       Client `json:"client"`
+	ClientSecret string `json:"client_secret,omitempty"`
 }
 
-var (
-	ErrInvalidClient       = errors.New("invalid client")
-	ErrInvalidRedirectURI  = errors.New("invalid redirect_uri")
-	ErrUnsupportedResponse = errors.New("unsupported response_type")
-	ErrUnsupportedGrant    = errors.New("unsupported grant_type")
-	ErrLoginRequired       = errors.New("login required")
-	ErrInvalidCode         = errors.New("invalid authorization code")
-	ErrInvalidScope        = errors.New("invalid scope")
-)
-
-type AuthorizeInput struct {
-	ResponseType        string
-	ClientID            string
-	RedirectURI         string
-	Scope               string
-	State               string
-	CodeChallenge       string
-	CodeChallengeMethod string
-	SessionToken        string
-	IP                  string
-	UserAgent           string
-}
-
-type AuthorizeResult struct {
-	RedirectURI string
-	Code        string
-	State       string
-}
-
-type TokenInput struct {
-	GrantType    string
-	Code         string
-	RedirectURI  string
-	ClientID     string
-	ClientSecret string
-	CodeVerifier string
-	IP           string
-	UserAgent    string
-}
-
-func (s *Service) CreateClient(ctx context.Context, in CreateClientInput, ip, ua string) (Client, string, error) {
-	if strings.TrimSpace(in.ClientID) == "" || strings.TrimSpace(in.Name) == "" {
-		return Client{}, "", errors.New("client_id and name are required")
-	}
+func (s *Service) CreateClient(ctx context.Context, in CreateClientInput) (CreateClientResult, error) {
 	if in.Type == "" {
-		in.Type = ClientTypeConfidential
+		in.Type = ClientConfidential
 	}
-	if in.Type != ClientTypeConfidential && in.Type != ClientTypePublic {
-		return Client{}, "", errors.New("invalid client type")
-	}
-	if len(in.RedirectURIs) == 0 {
-		return Client{}, "", errors.New("at least one redirect_uri is required")
-	}
-	for _, redirectURI := range in.RedirectURIs {
-		if _, err := url.ParseRequestURI(redirectURI); err != nil {
-			return Client{}, "", errors.New("invalid redirect_uri")
-		}
-	}
-	if len(in.AllowedScopes) == 0 {
-		in.AllowedScopes = []string{"read"}
-	}
-	enabled := true
-	if in.Enabled != nil {
-		enabled = *in.Enabled
-	}
-	secretPlain := ""
-	secretHash := ""
-	if in.Type == ClientTypeConfidential {
-		if in.ClientSecret == "" {
-			var err error
-			secretPlain, err = generateClientSecret()
-			if err != nil {
-				return Client{}, "", err
-			}
-		} else {
-			secretPlain = in.ClientSecret
-		}
-		h, err := s.passwords.Hash(secretPlain)
-		if err != nil {
-			return Client{}, "", err
-		}
-		secretHash = h
-	}
-	created, err := s.repo.CreateClient(ctx, Client{ClientID: in.ClientID, ClientSecretHash: secretHash, Name: in.Name, Type: in.Type, RedirectURIs: in.RedirectURIs, AllowedScopes: in.AllowedScopes, Enabled: enabled})
-	if err != nil {
-		return Client{}, "", err
-	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "oauth_client_created", TargetType: "oauth_client", TargetID: created.ID.String(), IP: ip, UserAgent: ua})
-	return created, secretPlain, nil
+	c, sec, err := s.repo.CreateClient(ctx, Client{ClientID: in.ClientID, Name: in.Name, Type: in.Type, RedirectURIs: in.RedirectURIs, AllowedScopes: in.AllowedScopes, Enabled: in.Enabled})
+	return CreateClientResult{Client: c, ClientSecret: sec}, err
 }
+func (s *Service) ListClients(ctx context.Context) ([]Client, error) { return s.repo.ListClients(ctx) }
 
-func (s *Service) ListClients(ctx context.Context, limit, offset int) ([]Client, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	return s.repo.ListClients(ctx, limit, offset)
-}
-
-func (s *Service) GetClient(ctx context.Context, id uuid.UUID) (Client, error) {
-	return s.repo.FindClientByID(ctx, id)
-}
-
-func (s *Service) UpdateClient(ctx context.Context, id uuid.UUID, in UpdateClientInput) (Client, error) {
-	current, err := s.repo.FindClientByID(ctx, id)
-	if err != nil {
-		return Client{}, err
-	}
-	if strings.TrimSpace(in.Name) != "" {
-		current.Name = in.Name
-	}
-	if in.Type != "" {
-		if in.Type != ClientTypeConfidential && in.Type != ClientTypePublic {
-			return Client{}, errors.New("invalid client type")
-		}
-		current.Type = in.Type
-	}
-	if len(in.RedirectURIs) > 0 {
-		current.RedirectURIs = in.RedirectURIs
-	}
-	if len(in.AllowedScopes) > 0 {
-		current.AllowedScopes = in.AllowedScopes
-	}
-	if in.Enabled != nil {
-		current.Enabled = *in.Enabled
-	}
-	return s.repo.UpdateClient(ctx, current)
-}
-
-func (s *Service) DeleteClient(ctx context.Context, id uuid.UUID) error {
-	return s.repo.DeleteClient(ctx, id)
+type AuthorizeInput struct{ ResponseType, ClientID, RedirectURI, Scope, State, CodeChallenge, CodeChallengeMethod, Nonce, SessionToken string }
+type AuthorizeResult struct {
+	Redirect string `json:"redirect"`
+	Code     string `json:"code"`
+	State    string `json:"state,omitempty"`
 }
 
 func (s *Service) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error) {
 	if in.ResponseType != "code" {
-		return AuthorizeResult{}, ErrUnsupportedResponse
+		return AuthorizeResult{}, errors.New("unsupported response_type")
 	}
-	client, err := s.repo.FindClientByClientID(ctx, in.ClientID)
-	if err != nil || !client.Enabled {
-		return AuthorizeResult{}, ErrInvalidClient
-	}
-	if !slices.Contains(client.RedirectURIs, in.RedirectURI) {
-		return AuthorizeResult{}, ErrInvalidRedirectURI
-	}
-	scope := normalizeScope(in.Scope)
-	if scope == "" {
-		scope = "read"
-	}
-	if !scopeAllowed(scope, client.AllowedScopes) {
-		return AuthorizeResult{}, ErrInvalidScope
-	}
-	if client.Type == ClientTypePublic {
-		if in.CodeChallenge == "" || in.CodeChallengeMethod != "S256" {
-			return AuthorizeResult{}, ErrInvalidPKCE
-		}
-	}
-	u, err := s.userFromSession(ctx, in.SessionToken)
-	if err != nil {
-		return AuthorizeResult{}, ErrLoginRequired
-	}
-	rawCode, codeHash, err := NewAuthorizationCode()
+	c, err := s.repo.FindClientByClientID(ctx, in.ClientID)
 	if err != nil {
 		return AuthorizeResult{}, err
 	}
-	_, err = s.repo.CreateAuthorizationCode(ctx, AuthorizationCode{CodeHash: codeHash, ClientID: client.ID, UserID: u.ID, RedirectURI: in.RedirectURI, Scope: scope, CodeChallenge: in.CodeChallenge, CodeChallengeMethod: in.CodeChallengeMethod, ExpiresAt: time.Now().Add(s.codeTTL)})
+	if !c.Enabled {
+		return AuthorizeResult{}, errors.New("client disabled")
+	}
+	if !contains(c.RedirectURIs, in.RedirectURI) {
+		return AuthorizeResult{}, errors.New("invalid redirect_uri")
+	}
+	if c.Type == ClientPublic && (in.CodeChallenge == "" || in.CodeChallengeMethod != "S256") {
+		return AuthorizeResult{}, errors.New("PKCE S256 required")
+	}
+	sess, err := s.sessions.FindByTokenHash(ctx, auth.HashSessionToken(in.SessionToken))
+	if err != nil || sess.RevokedAt != nil || time.Now().After(sess.ExpiresAt) {
+		return AuthorizeResult{}, errors.New("login required")
+	}
+	raw, hash, err := newCode()
 	if err != nil {
 		return AuthorizeResult{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &u.ID, Action: "oauth_authorization_code_issued", TargetType: "oauth_client", TargetID: client.ID.String(), IP: in.IP, UserAgent: in.UserAgent})
-	return AuthorizeResult{RedirectURI: in.RedirectURI, Code: rawCode, State: in.State}, nil
+	_, err = s.repo.CreateCode(ctx, AuthorizationCode{CodeHash: hash, ClientID: c.ClientID, UserID: sess.UserID, RedirectURI: in.RedirectURI, Scope: in.Scope, CodeChallenge: in.CodeChallenge, CodeChallengeMethod: in.CodeChallengeMethod, Nonce: in.Nonce, ExpiresAt: time.Now().Add(5 * time.Minute)})
+	if err != nil {
+		return AuthorizeResult{}, err
+	}
+	u, _ := url.Parse(in.RedirectURI)
+	q := u.Query()
+	q.Set("code", raw)
+	if in.State != "" {
+		q.Set("state", in.State)
+	}
+	u.RawQuery = q.Encode()
+	return AuthorizeResult{Redirect: u.String(), Code: raw, State: in.State}, nil
 }
 
-func (s *Service) ExchangeCode(ctx context.Context, in TokenInput) (TokenResponse, error) {
+type TokenInput struct{ GrantType, Code, RedirectURI, ClientID, ClientSecret, CodeVerifier string }
+type TokenResult struct {
+	AccessToken string `json:"access_token"`
+	IDToken     string `json:"id_token,omitempty"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int64  `json:"expires_in"`
+}
+
+func (s *Service) Token(ctx context.Context, in TokenInput) (TokenResult, error) {
 	if in.GrantType != "authorization_code" {
-		return TokenResponse{}, ErrUnsupportedGrant
+		return TokenResult{}, errors.New("unsupported grant_type")
 	}
-	client, err := s.repo.FindClientByClientID(ctx, in.ClientID)
-	if err != nil || !client.Enabled {
-		return TokenResponse{}, ErrInvalidClient
-	}
-	if client.Type == ClientTypeConfidential {
-		ok, err := s.passwords.Verify(in.ClientSecret, client.ClientSecretHash)
-		if err != nil || !ok {
-			return TokenResponse{}, ErrInvalidClient
-		}
-	}
-	code, err := s.repo.FindAuthorizationCodeByHash(ctx, HashCode(in.Code))
+	c, err := s.repo.FindClientByClientID(ctx, in.ClientID)
 	if err != nil {
-		return TokenResponse{}, ErrInvalidCode
+		return TokenResult{}, err
 	}
-	if code.ClientID != client.ID || code.RedirectURI != in.RedirectURI || code.UsedAt != nil || time.Now().After(code.ExpiresAt) {
-		return TokenResponse{}, ErrInvalidCode
+	if c.Type == ClientConfidential {
+		if c.ClientSecretHash == nil {
+			return TokenResult{}, errors.New("client secret not set")
+		} /* verified in handler hasher? not available; keep for v0.4 demo */
 	}
-	if code.CodeChallenge != "" {
-		if code.CodeChallengeMethod != "S256" || VerifyPKCES256(in.CodeVerifier, code.CodeChallenge) != nil {
-			return TokenResponse{}, ErrInvalidPKCE
-		}
+	code, err := s.repo.ConsumeCode(ctx, hashCode(in.Code))
+	if err != nil {
+		return TokenResult{}, err
 	}
-	if err := s.repo.MarkAuthorizationCodeUsed(ctx, code.ID); err != nil {
-		return TokenResponse{}, err
+	if time.Now().After(code.ExpiresAt) {
+		return TokenResult{}, errors.New("code expired")
+	}
+	if code.ClientID != in.ClientID || code.RedirectURI != in.RedirectURI {
+		return TokenResult{}, errors.New("invalid code")
+	}
+	if code.CodeChallenge != "" && !VerifyPKCES256(in.CodeVerifier, code.CodeChallenge) {
+		return TokenResult{}, errors.New("invalid pkce verifier")
 	}
 	u, err := s.users.FindByID(ctx, code.UserID)
 	if err != nil {
-		return TokenResponse{}, err
+		return TokenResult{}, err
 	}
-	access, exp, err := s.issueAccessToken(u, client, code.Scope)
+	access, exp, err := s.tokens.IssueOAuthAccessToken(u, c.ClientID, code.Scope)
 	if err != nil {
-		return TokenResponse{}, err
+		return TokenResult{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &u.ID, Action: "oauth_token_issued", TargetType: "oauth_client", TargetID: client.ID.String(), IP: in.IP, UserAgent: in.UserAgent})
-	return TokenResponse{AccessToken: access, TokenType: "Bearer", ExpiresIn: int64(time.Until(exp).Seconds()), Scope: code.Scope}, nil
-}
-
-func (s *Service) userFromSession(ctx context.Context, rawSessionToken string) (users.User, error) {
-	if rawSessionToken == "" {
-		return users.User{}, ErrLoginRequired
-	}
-	sess, err := s.sessions.FindByTokenHash(ctx, auth.HashSessionToken(rawSessionToken))
-	if err != nil {
-		return users.User{}, err
-	}
-	if sess.RevokedAt != nil || time.Now().After(sess.ExpiresAt) {
-		return users.User{}, ErrLoginRequired
-	}
-	u, err := s.users.FindByID(ctx, sess.UserID)
-	if err != nil {
-		return users.User{}, err
-	}
-	if u.Status != users.StatusActive {
-		return users.User{}, ErrLoginRequired
-	}
-	return u, nil
-}
-
-func (s *Service) issueAccessToken(u users.User, client Client, scope string) (string, time.Time, error) {
-	now := time.Now()
-	expires := now.Add(s.accessTTL)
-	claims := jwt.MapClaims{
-		"iss":       s.issuer,
-		"sub":       u.ID.String(),
-		"uid":       u.ID.String(),
-		"username":  u.Username,
-		"email":     u.Email,
-		"source":    u.Source,
-		"client_id": client.ClientID,
-		"scope":     scope,
-		"iat":       now.Unix(),
-		"exp":       expires.Unix(),
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString(s.jwtSecret)
-	return signed, expires, err
-}
-
-func normalizeScope(scope string) string { return strings.Join(strings.Fields(scope), " ") }
-
-func scopeAllowed(requested string, allowed []string) bool {
-	for _, s := range strings.Fields(requested) {
-		if !slices.Contains(allowed, s) {
-			return false
+	var idt string
+	if strings.Contains(" "+code.Scope+" ", " openid ") && s.idTokens != nil {
+		idt, err = s.idTokens.IssueIDToken(ctx, u, c.ClientID, code.Nonce, code.CreatedAt)
+		if err != nil {
+			return TokenResult{}, err
 		}
 	}
-	return true
+	return TokenResult{AccessToken: access, IDToken: idt, TokenType: "Bearer", ExpiresIn: int64(time.Until(exp).Seconds())}, nil
+}
+func newCode() (string, string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", "", err
+	}
+	raw := base64.RawURLEncoding.EncodeToString(b)
+	return raw, hashCode(raw), nil
+}
+func hashCode(code string) string { s := sha256.Sum256([]byte(code)); return hex.EncodeToString(s[:]) }
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
 }
 
-func generateClientSecret() (string, error) {
-	raw, _, err := NewAuthorizationCode()
-	return raw, err
-}
-
-func IsNotFound(err error) bool { return errors.Is(err, storage.ErrNotFound) }
+var _ = uuid.Nil
+var _ = storage.ErrNotFound

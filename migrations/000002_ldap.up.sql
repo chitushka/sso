@@ -17,12 +17,6 @@ CREATE TABLE IF NOT EXISTS ldap_providers (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (NOT (use_tls AND start_tls))
 );
-
-ALTER TABLE users
-    ADD COLUMN IF NOT EXISTS ldap_provider_id UUID REFERENCES ldap_providers(id) ON DELETE SET NULL,
-    ADD COLUMN IF NOT EXISTS ldap_dn TEXT,
-    ALTER COLUMN password_hash DROP NOT NULL;
-
+ALTER TABLE users ADD CONSTRAINT fk_users_ldap_provider FOREIGN KEY (ldap_provider_id) REFERENCES ldap_providers(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_ldap_providers_enabled ON ldap_providers(enabled);
 CREATE INDEX IF NOT EXISTS idx_users_ldap_provider_id ON users(ldap_provider_id);
-CREATE INDEX IF NOT EXISTS idx_users_ldap_dn ON users(ldap_dn);

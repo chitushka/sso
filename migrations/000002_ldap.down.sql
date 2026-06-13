@@ -1,8 +1,2 @@
-ALTER TABLE users
-    DROP COLUMN IF EXISTS ldap_dn,
-    DROP COLUMN IF EXISTS ldap_provider_id;
-
-UPDATE users SET password_hash = '' WHERE password_hash IS NULL;
-ALTER TABLE users ALTER COLUMN password_hash SET NOT NULL;
-
+ALTER TABLE users DROP CONSTRAINT IF EXISTS fk_users_ldap_provider;
 DROP TABLE IF EXISTS ldap_providers;

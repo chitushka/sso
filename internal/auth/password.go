@@ -4,62 +4,52 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
-	"errors"
 	"fmt"
-	"strings"
-
 	"golang.org/x/crypto/argon2"
+	"strings"
 )
 
 type PasswordHasher interface {
 	Hash(password string) (string, error)
-	Verify(password, encodedHash string) (bool, error)
+	Verify(password, hash string) (bool, error)
 }
-
 type Argon2idHasher struct {
 	memory      uint32
 	iterations  uint32
 	parallelism uint8
-	saltLength  uint32
-	keyLength   uint32
+	saltLen     uint32
+	keyLen      uint32
 }
 
-func NewArgon2idHasher() Argon2idHasher {
-	return Argon2idHasher{memory: 64 * 1024, iterations: 3, parallelism: 2, saltLength: 16, keyLength: 32}
+func NewArgon2idHasher() *Argon2idHasher {
+	return &Argon2idHasher{memory: 64 * 1024, iterations: 3, parallelism: 2, saltLen: 16, keyLen: 32}
 }
-func (h Argon2idHasher) Hash(password string) (string, error) {
-	salt := make([]byte, h.saltLength)
+func (h *Argon2idHasher) Hash(password string) (string, error) {
+	salt := make([]byte, h.saltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	hash := argon2.IDKey([]byte(password), salt, h.iterations, h.memory, h.parallelism, h.keyLength)
-	b64Salt := base64.RawStdEncoding.EncodeToString(salt)
-	b64Hash := base64.RawStdEncoding.EncodeToString(hash)
-	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", h.memory, h.iterations, h.parallelism, b64Salt, b64Hash), nil
+	key := argon2.IDKey([]byte(password), salt, h.iterations, h.memory, h.parallelism, h.keyLen)
+	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", h.memory, h.iterations, h.parallelism, base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key)), nil
 }
-func (h Argon2idHasher) Verify(password, encodedHash string) (bool, error) {
-	return verifyArgon2id(password, encodedHash)
-}
-func verifyArgon2id(password, encodedHash string) (bool, error) {
-	parts := strings.Split(encodedHash, "$")
+func (h *Argon2idHasher) Verify(password, encoded string) (bool, error) {
+	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 {
-		return false, errors.New("invalid argon2id hash")
+		return false, fmt.Errorf("invalid hash")
 	}
-	var memory uint32
-	var iterations uint32
-	var parallelism uint8
-	_, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism)
-	if err != nil {
+	var m, t uint32
+	var p uint8
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err != nil {
 		return false, err
 	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil {
 		return false, err
 	}
-	expected, err := base64.RawStdEncoding.DecodeString(parts[5])
+	key, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil {
 		return false, err
 	}
-	actual := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(expected)))
-	return subtle.ConstantTimeCompare(actual, expected) == 1, nil
+	other := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(key)))
+	return subtle.ConstantTimeCompare(key, other) == 1, nil
 }

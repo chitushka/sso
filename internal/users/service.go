@@ -3,16 +3,14 @@ package users
 import (
 	"context"
 	"errors"
-	"strings"
-
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/google/uuid"
+	"strings"
 )
 
 type PasswordHasher interface {
 	Hash(password string) (string, error)
 }
-
 type Service struct {
 	repo      Repository
 	passwords PasswordHasher
@@ -35,22 +33,22 @@ type UpdateUserInput struct {
 	Status   Status `json:"status"`
 }
 
-func (s *Service) Create(ctx context.Context, in CreateUserInput, actorIP, actorUA string) (User, error) {
+func (s *Service) Create(ctx context.Context, in CreateUserInput, ip, ua string) (User, error) {
 	if strings.TrimSpace(in.Username) == "" || strings.TrimSpace(in.Email) == "" || len(in.Password) < 8 {
 		return User{}, errors.New("username, email and password>=8 are required")
 	}
 	if in.Status == "" {
 		in.Status = StatusActive
 	}
-	hash, err := s.passwords.Hash(in.Password)
+	h, err := s.passwords.Hash(in.Password)
 	if err != nil {
 		return User{}, err
 	}
-	u, err := s.repo.Create(ctx, User{Username: in.Username, Email: in.Email, PasswordHash: hash, Status: in.Status, Source: "local"})
+	u, err := s.repo.Create(ctx, User{Username: in.Username, Email: in.Email, PasswordHash: &h, Status: in.Status, Source: SourceLocal})
 	if err != nil {
 		return User{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "user_created", TargetType: "user", TargetID: u.ID.String(), IP: actorIP, UserAgent: actorUA})
+	_ = s.audit.Write(ctx, audit.Event{Action: "user_created", TargetType: "user", TargetID: u.ID.String(), IP: ip, UserAgent: ua})
 	return u, nil
 }
 func (s *Service) List(ctx context.Context, limit, offset int) ([]User, error) {
@@ -72,9 +70,9 @@ func (s *Service) SetPassword(ctx context.Context, id uuid.UUID, password string
 	if len(password) < 8 {
 		return errors.New("password must contain at least 8 characters")
 	}
-	hash, err := s.passwords.Hash(password)
+	h, err := s.passwords.Hash(password)
 	if err != nil {
 		return err
 	}
-	return s.repo.SetPasswordHash(ctx, id, hash)
+	return s.repo.SetPasswordHash(ctx, id, h)
 }

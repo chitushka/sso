@@ -5,19 +5,10 @@ services:
       POSTGRES_DB: sso
       POSTGRES_USER: sso
       POSTGRES_PASSWORD: sso
-      TZ: Europe/Moscow
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./migrations/000001_init.up.sql:/docker-entrypoint-initdb.d/000001_init.up.sql:ro
-      - ./migrations/000002_ldap.up.sql:/docker-entrypoint-initdb.d/000002_ldap.up.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sso -d sso"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
+      - pgdata:/var/lib/postgresql/data
   ldap:
     image: osixia/openldap:1.5.0
     environment:
@@ -27,27 +18,17 @@ services:
       LDAP_CONFIG_PASSWORD: "config"
     ports:
       - "389:389"
-    volumes:
-      - ldap_data:/var/lib/ldap
-      - ldap_config:/etc/ldap/slapd.d
-
   api:
     build: .
+    depends_on:
+      - postgres
     environment:
-      APP_ENV: local
-      HTTP_ADDR: ":8080"
-      DATABASE_URL: "postgres://sso:sso@postgres:5432/sso?sslmode=disable"
-      JWT_SECRET: "change-me-please-change-me-please-change-me"
-      ACCESS_TOKEN_TTL: "15m"
-      SESSION_TTL: "720h"
-      CORS_ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:8080"
+      SSO_HTTP_ADDR: :8080
+      SSO_DB_URL: postgres://sso:sso@postgres:5432/sso?sslmode=disable
+      SSO_JWT_SECRET: change-me-change-me-change-me
+      SSO_ISSUER: http://localhost:8080
+      SSO_CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:8080
     ports:
       - "8080:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
 volumes:
-  postgres_data:
-  ldap_data:
-  ldap_config:
+  pgdata:

@@ -1,9 +1,8 @@
 package ldap
 
 import (
-	"time"
-
 	"github.com/google/uuid"
+	"time"
 )
 
 type Provider struct {
@@ -14,7 +13,7 @@ type Provider struct {
 	UseTLS               bool      `json:"use_tls"`
 	StartTLS             bool      `json:"start_tls"`
 	BindDN               string    `json:"bind_dn"`
-	BindPassword         string    `json:"-"`
+	BindPassword         string    `json:"bind_password,omitempty"`
 	BaseDN               string    `json:"base_dn"`
 	UserFilter           string    `json:"user_filter"`
 	UsernameAttribute    string    `json:"username_attribute"`
@@ -24,17 +23,9 @@ type Provider struct {
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }
-
 type Identity struct {
-	ProviderID  uuid.UUID `json:"provider_id"`
-	DN          string    `json:"dn"`
-	Username    string    `json:"username"`
-	Email       string    `json:"email"`
-	DisplayName string    `json:"display_name"`
-	Source      string    `json:"source"`
-}
-
-type TestResult struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message"`
+	Username   string
+	Email      string
+	DN         string
+	ProviderID uuid.UUID
 }

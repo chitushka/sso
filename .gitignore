@@ -1,20 +1,11 @@
-# Binaries
 bin/
 dist/
 *.exe
 *.test
 *.out
-
-# Go
-vendor/
-
-# Env
 .env
 *.local
-
-# IDE
 .idea/
 .vscode/
-
-# OS
 .DS_Store
+vendor/
