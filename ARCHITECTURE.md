@@ -14,7 +14,28 @@ Transport -> Application -> Domain -> Repository -> Storage
 - `ldap` — LDAP provider configuration and Search + Bind authentication
 - `oauth` — OAuth2 clients, authorization codes and token endpoint
 - `oidc` — discovery, JWKS, ID token and UserInfo
+- `rbac` — roles, permissions and administrative access control
 - `audit` — audit events
+- `config` — typed application configuration loaded from `SSO_` environment variables
+
+## Configuration Architecture
+
+Release 0.5.1 uses a typed configuration model:
+
+```text
+Config
+  Env
+  HTTP.Address
+  Database.URL
+  Security.JWTSecret
+  Token.AccessTTL
+  Token.SessionTTL
+  CORS.AllowedOrigins
+  OIDC.Issuer
+  Logging.Level
+```
+
+Application configuration must use the `SSO_` environment namespace. The canonical database variable is `SSO_DATABASE_URL`.
 
 ## OIDC
 

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -10,71 +12,151 @@ import (
 )
 
 type Config struct {
-	HTTP HTTPConfig
-	DB   DBConfig
-	Auth AuthConfig
-	CORS CORSConfig
-	OIDC OIDCConfig
+	Env      string
+	HTTP     HTTPConfig
+	Database DatabaseConfig
+	Security SecurityConfig
+	Token    TokenConfig
+	CORS     CORSConfig
+	OIDC     OIDCConfig
+	Logging  LoggingConfig
 }
-type HTTPConfig struct{ Addr string }
-type DBConfig struct{ URL string }
-type AuthConfig struct {
-	JWTSecret      string
-	AccessTokenTTL time.Duration
-	SessionTTL     time.Duration
+
+type HTTPConfig struct {
+	Address string
 }
-type CORSConfig struct{ AllowedOrigins []string }
+
+type DatabaseConfig struct {
+	URL string
+}
+
+type SecurityConfig struct {
+	JWTSecret string
+}
+
+type TokenConfig struct {
+	AccessTTL  time.Duration
+	SessionTTL time.Duration
+}
+
+type CORSConfig struct {
+	AllowedOrigins []string
+}
+
 type OIDCConfig struct {
 	Issuer             string
 	KeyRotationEnabled bool
 }
 
+type LoggingConfig struct {
+	Level string
+}
+
 func Load() (Config, error) {
 	_ = godotenv.Load()
-	return Config{
-		HTTP: HTTPConfig{Addr: env("SSO_HTTP_ADDR", ":8080")},
-		DB:   DBConfig{URL: env("SSO_DB_URL", "postgres://sso:sso@localhost:5432/sso?sslmode=disable")},
-		Auth: AuthConfig{JWTSecret: env("SSO_JWT_SECRET", "dev-secret-change-me"), AccessTokenTTL: dur("SSO_ACCESS_TOKEN_TTL", 15*time.Minute), SessionTTL: dur("SSO_SESSION_TTL", 24*time.Hour)},
-		CORS: CORSConfig{AllowedOrigins: split(env("SSO_CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8080"))},
-		OIDC: OIDCConfig{Issuer: env("SSO_ISSUER", "http://localhost:8080"), KeyRotationEnabled: boolean("SSO_OIDC_KEY_ROTATION_ENABLED", false)},
-	}, nil
-}
-func env(k, d string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
+
+	cfg := Config{
+		Env: env("SSO_ENV", "local"),
+		HTTP: HTTPConfig{
+			Address: env("SSO_HTTP_ADDR", ":8080"),
+		},
+		Database: DatabaseConfig{
+			URL: os.Getenv("SSO_DATABASE_URL"),
+		},
+		Security: SecurityConfig{
+			JWTSecret: os.Getenv("SSO_JWT_SECRET"),
+		},
+		Token: TokenConfig{
+			AccessTTL:  duration("SSO_ACCESS_TOKEN_TTL", 15*time.Minute),
+			SessionTTL: duration("SSO_SESSION_TTL", 720*time.Hour),
+		},
+		CORS: CORSConfig{
+			AllowedOrigins: split(env("SSO_CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8080")),
+		},
+		OIDC: OIDCConfig{
+			Issuer:             env("SSO_ISSUER", "http://localhost:8080"),
+			KeyRotationEnabled: boolean("SSO_OIDC_KEY_ROTATION_ENABLED", false),
+		},
+		Logging: LoggingConfig{
+			Level: env("SSO_LOG_LEVEL", "info"),
+		},
 	}
-	return d
+
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+
+	return cfg, nil
 }
-func split(s string) []string {
-	parts := strings.Split(s, ",")
+
+func (c Config) Validate() error {
+	var errs []error
+
+	if strings.TrimSpace(c.Database.URL) == "" {
+		errs = append(errs, errors.New("SSO_DATABASE_URL is required"))
+	}
+	if strings.TrimSpace(c.Security.JWTSecret) == "" {
+		errs = append(errs, errors.New("SSO_JWT_SECRET is required"))
+	}
+	if len(c.Security.JWTSecret) > 0 && len(c.Security.JWTSecret) < 32 {
+		errs = append(errs, errors.New("SSO_JWT_SECRET must be at least 32 characters"))
+	}
+	if strings.TrimSpace(c.OIDC.Issuer) == "" {
+		errs = append(errs, errors.New("SSO_ISSUER is required"))
+	}
+	if c.Token.AccessTTL <= 0 {
+		errs = append(errs, errors.New("SSO_ACCESS_TOKEN_TTL must be positive"))
+	}
+	if c.Token.SessionTTL <= 0 {
+		errs = append(errs, errors.New("SSO_SESSION_TTL must be positive"))
+	}
+
+	return errors.Join(errs...)
+}
+
+func env(key string, defaultValue string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func split(value string) []string {
+	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
 		}
 	}
 	return out
 }
-func dur(k string, d time.Duration) time.Duration {
-	v := os.Getenv(k)
-	if v == "" {
-		return d
+
+func duration(key string, defaultValue time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
 	}
-	x, err := time.ParseDuration(v)
+
+	parsed, err := time.ParseDuration(value)
 	if err != nil {
-		return d
+		panic(fmt.Sprintf("%s has invalid duration %q: %v", key, value, err))
 	}
-	return x
+
+	return parsed
 }
-func boolean(k string, d bool) bool {
-	v := os.Getenv(k)
-	if v == "" {
-		return d
+
+func boolean(key string, defaultValue bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
 	}
-	b, err := strconv.ParseBool(v)
+
+	parsed, err := strconv.ParseBool(value)
 	if err != nil {
-		return d
+		panic(fmt.Sprintf("%s has invalid boolean %q: %v", key, value, err))
 	}
-	return b
+
+	return parsed
 }

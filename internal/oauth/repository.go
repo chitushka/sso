@@ -1,9 +1,6 @@
 package oauth
 
-import (
-	"context"
-	"github.com/google/uuid"
-)
+import "context"
 
 type Repository interface {
 	CreateClient(ctx context.Context, c Client) (Client, string, error)

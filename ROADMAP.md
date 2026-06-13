@@ -14,13 +14,26 @@ Scope:
 
 ## v0.5 — RBAC
 
-Planned:
+Status: generated for testing.
+
+Scope:
 - roles
 - permissions
 - user-role assignments
 - role-permission assignments
 - bootstrap admin role
 - authorization middleware
+
+## v0.5.1 — Configuration Refactoring
+
+Status: in progress.
+
+Scope:
+- standardize application variables under the `SSO_` namespace
+- replace `SSO_DB_URL` with `SSO_DATABASE_URL`
+- introduce typed configuration groups for HTTP, database, security, tokens, CORS, OIDC and logging
+- validate required database and JWT configuration at startup
+- update Docker Compose and documentation examples
 
 ## v0.6 — Security Hardening
 
@@ -39,22 +52,3 @@ Stack:
 - Bootstrap 5
 - HTML
 - CSS
-
-## Release 0.5 - RBAC
-
-Status: GENERATED
-
-Implemented:
-
-- roles table
-- permissions table
-- role_permissions table
-- user_roles table
-- default admin/user roles
-- default permission set
-- RBAC middleware
-- role API
-- permission API
-- user-role assignment API
-- bootstrap admin role assignment
-- permission checks for users, LDAP provider and OAuth client admin APIs

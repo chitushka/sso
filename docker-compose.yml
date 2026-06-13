@@ -9,6 +9,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+
   ldap:
     image: osixia/openldap:1.5.0
     environment:
@@ -17,17 +18,24 @@ services:
       LDAP_ADMIN_PASSWORD: admin
     ports:
       - "389:389"
+
   api:
     build: .
     depends_on:
       - postgres
     environment:
+      SSO_ENV: local
       SSO_HTTP_ADDR: :8080
-      SSO_DB_URL: postgres://sso:sso@postgres:5432/sso?sslmode=disable
-      SSO_JWT_SECRET: change-me-change-me-change-me
+      SSO_DATABASE_URL: postgres://sso:sso@postgres:5432/sso?sslmode=disable
+      SSO_JWT_SECRET: change-me-please-change-me-please-change-me
+      SSO_ACCESS_TOKEN_TTL: 15m
+      SSO_SESSION_TTL: 720h
+      SSO_CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:8080
       SSO_ISSUER: http://localhost:8080
-      SSO_CORS_ALLOWED_ORIGINS: http://localhost:5173,http://localhost:8080
+      SSO_OIDC_KEY_ROTATION_ENABLED: "false"
+      SSO_LOG_LEVEL: info
     ports:
       - "8080:8080"
+
 volumes:
   pgdata:
