@@ -1,4 +1,4 @@
-# SSO v0.4 — OpenID Connect Provider
+# SSO v0.5.1 — Configuration Refactoring
 
 Production-oriented SSO/IdP prototype written in Go.
 
@@ -13,6 +13,7 @@ Production-oriented SSO/IdP prototype written in Go.
 - LDAP / Active Directory Search + Bind
 - OAuth2 Authorization Code Flow
 - OpenID Connect Discovery, JWKS, ID Token and UserInfo
+- RBAC for administrative APIs
 
 ## Start
 
@@ -22,6 +23,25 @@ docker compose up
 ```
 
 Run migrations manually with your preferred migration tool. Migration files are in `migrations/`.
+
+## Configuration
+
+Release 0.5.1 standardizes all application environment variables under the `SSO_` namespace.
+
+| Variable | Required | Example | Description |
+| --- | --- | --- | --- |
+| `SSO_ENV` | No | `local` | Runtime environment name. |
+| `SSO_HTTP_ADDR` | No | `:8080` | HTTP listen address. |
+| `SSO_DATABASE_URL` | Yes | `postgres://sso:sso@postgres:5432/sso?sslmode=disable` | PostgreSQL connection string. Use `postgres` as host inside Docker Compose. |
+| `SSO_JWT_SECRET` | Yes | `change-me-please-change-me-please-change-me` | JWT signing secret. Must be at least 32 characters. |
+| `SSO_ACCESS_TOKEN_TTL` | No | `15m` | Access token lifetime. |
+| `SSO_SESSION_TTL` | No | `720h` | Session lifetime. |
+| `SSO_CORS_ALLOWED_ORIGINS` | No | `http://localhost:3000,http://localhost:5173,http://localhost:8080` | Comma-separated CORS allowed origins. |
+| `SSO_ISSUER` | No | `http://localhost:8080` | OAuth2/OIDC issuer URL. |
+| `SSO_OIDC_KEY_ROTATION_ENABLED` | No | `false` | Reserved OIDC key rotation switch. |
+| `SSO_LOG_LEVEL` | No | `info` | JSON logger level: `debug`, `info`, `warn`, `error`. |
+
+Deprecated variable names such as `DATABASE_URL`, `SSO_DB_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, and `SESSION_TTL` are intentionally not supported by v0.5.1.
 
 ## Bootstrap
 
@@ -64,18 +84,6 @@ Authorization Code Flow:
 GET /oauth2/authorize?response_type=code&client_id=app&redirect_uri=http://localhost/callback&scope=openid profile email&state=xyz&nonce=abc&code_challenge=...&code_challenge_method=S256
 POST /oauth2/token
 ```
-
-## Release 0.4 scope
-
-- OIDC Discovery
-- JWKS endpoint
-- RSA 2048 / RS256 signing
-- ID Token
-- UserInfo endpoint
-- nonce support
-- Bootstrap fix
-- LDAP DI fix
-- Go 1.25.0 baseline
 
 ## Release 0.5 - RBAC
 
@@ -126,4 +134,4 @@ The following admin APIs now require permissions:
 - `ldap:*`
 - `oauth_clients:*`
 
-Run migrations before testing v0.5.
+Run migrations before testing v0.5.1.

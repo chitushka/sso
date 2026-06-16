@@ -5,9 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/storage"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -81,24 +81,10 @@ func (r *PostgresRepository) CreateCode(ctx context.Context, c AuthorizationCode
 	return c, err
 }
 func (r *PostgresRepository) ConsumeCode(ctx context.Context, hash string) (AuthorizationCode, error) {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return AuthorizationCode{}, err
-	}
-	defer tx.Rollback(ctx)
 	var c AuthorizationCode
-	err = tx.QueryRow(ctx, `SELECT id,code_hash,client_id,user_id,redirect_uri,scope,code_challenge,code_challenge_method,nonce,expires_at,used_at,created_at FROM oauth_authorization_codes WHERE code_hash=$1 FOR UPDATE`, hash).Scan(&c.ID, &c.CodeHash, &c.ClientID, &c.UserID, &c.RedirectURI, &c.Scope, &c.CodeChallenge, &c.CodeChallengeMethod, &c.Nonce, &c.ExpiresAt, &c.UsedAt, &c.CreatedAt)
+	err := r.pool.QueryRow(ctx, `UPDATE oauth_authorization_codes SET used_at=now() WHERE code_hash=$1 AND used_at IS NULL AND expires_at>now() RETURNING id,code_hash,client_id,user_id,redirect_uri,scope,code_challenge,code_challenge_method,nonce,expires_at,created_at,used_at`, hash).Scan(&c.ID, &c.CodeHash, &c.ClientID, &c.UserID, &c.RedirectURI, &c.Scope, &c.CodeChallenge, &c.CodeChallengeMethod, &c.Nonce, &c.ExpiresAt, &c.CreatedAt, &c.UsedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, storage.ErrNotFound
 	}
-	if err != nil {
-		return c, err
-	}
-	if c.UsedAt != nil {
-		return c, storage.ErrConflict
-	}
-	if _, err = tx.Exec(ctx, `UPDATE oauth_authorization_codes SET used_at=now() WHERE id=$1`, c.ID); err != nil {
-		return c, err
-	}
-	return c, tx.Commit(ctx)
+	return c, err
 }

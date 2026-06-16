@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"log/slog"
+	"net/http"
+
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/bootstrap"
@@ -16,8 +19,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"log/slog"
-	"net/http"
 )
 
 type App struct {
@@ -26,7 +27,7 @@ type App struct {
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
-	pool, err := pgxpool.New(ctx, cfg.DB.URL)
+	pool, err := pgxpool.New(ctx, cfg.Database.URL)
 	if err != nil {
 		return nil, err
 	}
@@ -40,12 +41,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	rbacRepo := rbac.NewPostgresRepository(pool)
 	rbacSvc := rbac.NewService(rbacRepo, auditRepo)
 	passwords := auth.NewArgon2idHasher()
-	tokens := auth.NewJWTIssuer([]byte(cfg.Auth.JWTSecret), cfg.Auth.AccessTokenTTL)
+	tokens := auth.NewJWTIssuer([]byte(cfg.Security.JWTSecret), cfg.Token.AccessTTL)
 	ldapRepo := ldap.NewPostgresRepository(pool)
 	ldapClient := ldap.NewClient()
 	ldapSvc := ldap.NewService(ldapRepo, ldapClient, auditRepo)
 	ldapAuth := ldap.NewAuthenticator(ldapRepo, ldapClient, userRepo, auditRepo)
-	authSvc := auth.NewService(userRepo, sessionRepo, auditRepo, passwords, tokens, cfg.Auth.SessionTTL).WithLDAP(ldapAuth)
+	authSvc := auth.NewService(userRepo, sessionRepo, auditRepo, passwords, tokens, cfg.Token.SessionTTL).WithLDAP(ldapAuth)
 	userSvc := users.NewService(userRepo, passwords, auditRepo)
 	bootstrapSvc := bootstrap.NewService(userRepo, passwords, rbacRepo, auditRepo)
 	oauthRepo := oauth.NewPostgresRepository(pool, passwords)
@@ -64,12 +65,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		return rbac.RequirePermission(rbacRepo, resource, action)
 	}
 	bootstrap.RegisterRoutes(r, bootstrapSvc)
-	auth.RegisterRoutes(r, authSvc, userRepo, []byte(cfg.Auth.JWTSecret))
-	users.RegisterRoutes(r, userSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)), require)
-	ldap.RegisterRoutes(r, ldapSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)), require)
-	oauth.RegisterRoutes(r, oauthSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)), require)
-	rbac.RegisterRoutes(r, rbacSvc, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)), rbacRepo)
-	oidc.RegisterRoutes(r, oidcSvc, userRepo, auth.BearerAuth([]byte(cfg.Auth.JWTSecret)))
+	auth.RegisterRoutes(r, authSvc, userRepo, []byte(cfg.Security.JWTSecret))
+	users.RegisterRoutes(r, userSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
+	ldap.RegisterRoutes(r, ldapSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
+	oauth.RegisterRoutes(r, oauthSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
+	rbac.RegisterRoutes(r, rbacSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), rbacRepo)
+	oidc.RegisterRoutes(r, oidcSvc, userRepo, auth.BearerAuth([]byte(cfg.Security.JWTSecret)))
 	return &App{pool: pool, router: r}, nil
 }
 func (a *App) Router() http.Handler { return a.router }
