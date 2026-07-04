@@ -28,8 +28,10 @@ services:
       SSO_HTTP_ADDR: :8080
       SSO_DATABASE_URL: postgres://sso:sso@postgres:5432/sso?sslmode=disable
       SSO_JWT_SECRET: change-me-please-change-me-please-change-me
+      SSO_ENCRYPTION_KEY: change-me-please-change-me-please-change-me
       SSO_ACCESS_TOKEN_TTL: 15m
       SSO_SESSION_TTL: 720h
+      SSO_REFRESH_TOKEN_TTL: 720h
       SSO_CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:8080
       SSO_ISSUER: http://localhost:8080
       SSO_OIDC_KEY_ROTATION_ENABLED: "false"

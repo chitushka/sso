@@ -66,6 +66,21 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (User, error) {
 func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateUserInput) (User, error) {
 	return s.repo.Update(ctx, User{ID: id, Username: in.Username, Email: in.Email, Status: in.Status})
 }
+
+// Delete is a soft delete: the row is kept for audit/FK integrity, the status
+// blocks login and the user disappears from normal flows.
+func (s *Service) Delete(ctx context.Context, id uuid.UUID, ip, ua string) error {
+	u, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	u.Status = StatusDeleted
+	if _, err := s.repo.Update(ctx, u); err != nil {
+		return err
+	}
+	_ = s.audit.Write(ctx, audit.Event{Action: "user_deleted", TargetType: "user", TargetID: id.String(), IP: ip, UserAgent: ua})
+	return nil
+}
 func (s *Service) SetPassword(ctx context.Context, id uuid.UUID, password string) error {
 	if len(password) < 8 {
 		return errors.New("password must contain at least 8 characters")

@@ -26,7 +26,7 @@ Scope:
 
 ## v0.5.1 — Configuration Refactoring
 
-Status: in progress.
+Status: done.
 
 Scope:
 - standardize application variables under the `SSO_` namespace
@@ -35,14 +35,29 @@ Scope:
 - validate required database and JWT configuration at startup
 - update Docker Compose and documentation examples
 
+## v0.5.2 — Security Fixes
+
+Status: done.
+
+Scope:
+- verify confidential client secret at the token endpoint (`client_secret_basic` and `client_secret_post`)
+- enforce requested scope against client `allowed_scopes`
+- encrypt LDAP bind passwords at rest (AES-256-GCM, `SSO_ENCRYPTION_KEY`)
+- background OIDC signing key rotation behind `SSO_OIDC_KEY_ROTATION_ENABLED`
+- configuration parse errors are returned instead of panicking
+
 ## v0.6 — Security Hardening
 
-Planned:
-- rate limiting
-- brute force protection
-- refresh token rotation
-- secret encryption
-- stricter audit policy
+Status: done.
+
+Scope:
+- refresh tokens with rotation and reuse detection (family revocation)
+- token revocation (RFC 7009) and introspection (RFC 7662) endpoints
+- brute force protection with exponential lockout per (username, IP)
+- rate limiting on login, token and bootstrap endpoints
+- audit log read API (`audit:read` permission)
+- completed admin CRUD: delete users, update/delete roles, OAuth clients and LDAP providers
+- secret encryption delivered early in v0.5.2 (`SSO_ENCRYPTION_KEY`)
 
 ## v0.7 — Admin UI
 

@@ -10,6 +10,9 @@ type Repository interface {
 	ListRoles(ctx context.Context) ([]Role, error)
 	CreateRole(ctx context.Context, role Role) (Role, error)
 	FindRoleByCode(ctx context.Context, code string) (Role, error)
+	FindRoleByID(ctx context.Context, id uuid.UUID) (Role, error)
+	UpdateRole(ctx context.Context, role Role) (Role, error)
+	DeleteRole(ctx context.Context, id uuid.UUID) error
 	ListPermissions(ctx context.Context) ([]Permission, error)
 	ListUserRoles(ctx context.Context, userID uuid.UUID) ([]Role, error)
 	ListRolePermissions(ctx context.Context, roleID uuid.UUID) ([]Permission, error)

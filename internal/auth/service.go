@@ -20,12 +20,14 @@ type Service struct {
 	tokens     JWTIssuer
 	sessionTTL time.Duration
 	ldap       LDAPAuthenticator
+	attempts   LoginAttemptRepository
 }
 
 func NewService(users users.Repository, sessions SessionRepository, audit audit.Repository, passwords PasswordHasher, tokens JWTIssuer, sessionTTL time.Duration) *Service {
 	return &Service{users: users, sessions: sessions, audit: audit, passwords: passwords, tokens: tokens, sessionTTL: sessionTTL}
 }
-func (s *Service) WithLDAP(a LDAPAuthenticator) *Service { s.ldap = a; return s }
+func (s *Service) WithLDAP(a LDAPAuthenticator) *Service         { s.ldap = a; return s }
+func (s *Service) WithLockout(r LoginAttemptRepository) *Service { s.attempts = r; return s }
 
 type LoginInput struct {
 	Username  string
@@ -45,6 +47,9 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 var ErrUserBlocked = errors.New("user is not active")
 
 func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error) {
+	if err := s.checkLockout(ctx, in); err != nil {
+		return LoginResult{}, err
+	}
 	u, err := s.users.FindByUsername(ctx, in.Username)
 	if err == nil && u.Source == users.SourceLocal {
 		if u.Status != users.StatusActive {
@@ -55,8 +60,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 		}
 		ok, verr := s.passwords.Verify(in.Password, *u.PasswordHash)
 		if verr != nil || !ok {
-			_ = s.audit.Write(ctx, audit.Event{Action: "login_failed", TargetType: "user", TargetID: in.Username, IP: in.IP, UserAgent: in.UserAgent})
-			return LoginResult{}, ErrInvalidCredentials
+			return LoginResult{}, s.registerFailure(ctx, in)
 		}
 		return s.finishLogin(ctx, u, in)
 	}
@@ -69,8 +73,37 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return LoginResult{}, err
 	}
+	return LoginResult{}, s.registerFailure(ctx, in)
+}
+func (s *Service) checkLockout(ctx context.Context, in LoginInput) error {
+	if s.attempts == nil {
+		return nil
+	}
+	st, err := s.attempts.Status(ctx, in.Username, in.IP)
+	if err != nil {
+		return err
+	}
+	if st.LockedUntil != nil && time.Now().Before(*st.LockedUntil) {
+		return ErrLoginLocked
+	}
+	return nil
+}
+func (s *Service) registerFailure(ctx context.Context, in LoginInput) error {
 	_ = s.audit.Write(ctx, audit.Event{Action: "login_failed", TargetType: "user", TargetID: in.Username, IP: in.IP, UserAgent: in.UserAgent})
-	return LoginResult{}, ErrInvalidCredentials
+	if s.attempts == nil {
+		return ErrInvalidCredentials
+	}
+	n, err := s.attempts.Fail(ctx, in.Username, in.IP)
+	if err != nil {
+		return ErrInvalidCredentials
+	}
+	if n >= maxAttempts {
+		until := time.Now().Add(lockDuration(n))
+		if err := s.attempts.Lock(ctx, in.Username, in.IP, until); err == nil {
+			_ = s.audit.Write(ctx, audit.Event{Action: "login_locked", TargetType: "user", TargetID: in.Username, IP: in.IP, UserAgent: in.UserAgent})
+		}
+	}
+	return ErrInvalidCredentials
 }
 func (s *Service) finishLogin(ctx context.Context, u users.User, in LoginInput) (LoginResult, error) {
 	access, accessExp, err := s.tokens.Issue(u)
@@ -86,6 +119,9 @@ func (s *Service) finishLogin(ctx context.Context, u users.User, in LoginInput) 
 		return LoginResult{}, err
 	}
 	_ = s.users.TouchLastLogin(ctx, u.ID)
+	if s.attempts != nil {
+		_ = s.attempts.Reset(ctx, in.Username, in.IP)
+	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &u.ID, Action: "login_success", TargetType: "user", TargetID: u.ID.String(), IP: in.IP, UserAgent: in.UserAgent})
 	return LoginResult{User: u, AccessToken: access, AccessTokenExpiresAt: accessExp, SessionToken: raw, SessionExpiresAt: exp}, nil
 }

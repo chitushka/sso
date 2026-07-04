@@ -67,6 +67,22 @@ func (r *PostgresRepository) FindRoleByCode(ctx context.Context, code string) (R
 	return scanRole(r.pool.QueryRow(ctx, `SELECT id,code,name,coalesce(description,''),created_at,updated_at FROM roles WHERE code=$1`, code))
 }
 
+func (r *PostgresRepository) FindRoleByID(ctx context.Context, id uuid.UUID) (Role, error) {
+	return scanRole(r.pool.QueryRow(ctx, `SELECT id,code,name,coalesce(description,''),created_at,updated_at FROM roles WHERE id=$1`, id))
+}
+
+func (r *PostgresRepository) UpdateRole(ctx context.Context, role Role) (Role, error) {
+	return scanRole(r.pool.QueryRow(ctx, `UPDATE roles SET name=$2,description=$3,updated_at=now() WHERE id=$1 RETURNING id,code,name,coalesce(description,''),created_at,updated_at`, role.ID, role.Name, role.Description))
+}
+
+func (r *PostgresRepository) DeleteRole(ctx context.Context, id uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM roles WHERE id=$1`, id)
+	if err == nil && tag.RowsAffected() == 0 {
+		return storage.ErrNotFound
+	}
+	return err
+}
+
 func (r *PostgresRepository) ListPermissions(ctx context.Context) ([]Permission, error) {
 	rows, err := r.pool.Query(ctx, `SELECT id,code,resource,action,coalesce(description,''),created_at FROM permissions ORDER BY resource, action`)
 	if err != nil {

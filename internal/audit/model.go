@@ -19,3 +19,17 @@ type Event struct {
 type Repository interface {
 	Write(ctx context.Context, e Event) error
 }
+
+type Filter struct {
+	ActorUserID *uuid.UUID
+	Action      string
+	From        *time.Time
+	To          *time.Time
+	Limit       int
+	Offset      int
+}
+
+// Reader is separate from Repository so write-only fakes keep compiling.
+type Reader interface {
+	List(ctx context.Context, f Filter) ([]Event, error)
+}

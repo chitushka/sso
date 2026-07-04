@@ -24,6 +24,18 @@ type Client struct {
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
+type RefreshToken struct {
+	ID        uuid.UUID
+	TokenHash string
+	FamilyID  uuid.UUID
+	UserID    uuid.UUID
+	ClientID  string
+	Scope     string
+	ExpiresAt time.Time
+	RotatedAt *time.Time
+	RevokedAt *time.Time
+	CreatedAt time.Time
+}
 type AuthorizationCode struct {
 	ID                  uuid.UUID
 	CodeHash            string
