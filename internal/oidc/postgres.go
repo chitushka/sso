@@ -3,7 +3,10 @@ package oidc
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/chitushka/sso/internal/storage"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -24,6 +27,14 @@ func (s *PostgresKeyStore) ActiveKey(ctx context.Context) (SigningKey, error) {
 }
 func (s *PostgresKeyStore) Create(ctx context.Context, k SigningKey) (SigningKey, error) {
 	return scanKey(s.pool.QueryRow(ctx, `INSERT INTO oidc_signing_keys(kid,alg,private_key_pem,public_key_pem,status,expires_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,kid,alg,private_key_pem,public_key_pem,status,created_at,expires_at`, k.Kid, k.Alg, k.PrivateKeyPEM, k.PublicKeyPEM, k.Status, k.ExpiresAt))
+}
+func (s *PostgresKeyStore) MarkRetiring(ctx context.Context, id uuid.UUID, expiresAt time.Time) error {
+	_, err := s.pool.Exec(ctx, `UPDATE oidc_signing_keys SET status='retiring', expires_at=$2 WHERE id=$1`, id, expiresAt)
+	return err
+}
+func (s *PostgresKeyStore) RetireExpired(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, `UPDATE oidc_signing_keys SET status='retired' WHERE status='retiring' AND expires_at IS NOT NULL AND expires_at < now()`)
+	return err
 }
 func (s *PostgresKeyStore) PublicKeys(ctx context.Context) ([]SigningKey, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id,kid,alg,private_key_pem,public_key_pem,status,created_at,expires_at FROM oidc_signing_keys WHERE status IN ('active','retiring') ORDER BY created_at DESC`)

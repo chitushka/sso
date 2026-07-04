@@ -1,9 +1,12 @@
 package oauth
 
 import (
+	"errors"
+	"net/http"
+	"net/url"
+
 	"github.com/chitushka/sso/internal/httpx"
 	"github.com/go-chi/chi/v5"
-	"net/http"
 )
 
 func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler, require func(string, string) func(http.Handler) http.Handler) {
@@ -49,8 +52,24 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			httpx.Error(w, 400, "invalid form")
 			return
 		}
-		out, err := svc.Token(r.Context(), TokenInput{GrantType: r.Form.Get("grant_type"), Code: r.Form.Get("code"), RedirectURI: r.Form.Get("redirect_uri"), ClientID: r.Form.Get("client_id"), ClientSecret: r.Form.Get("client_secret"), CodeVerifier: r.Form.Get("code_verifier")})
+		clientID, clientSecret := r.Form.Get("client_id"), r.Form.Get("client_secret")
+		if id, sec, ok := r.BasicAuth(); ok {
+			// RFC 6749 §2.3.1: credentials in the Basic header are form-urlencoded.
+			if v, err := url.QueryUnescape(id); err == nil {
+				id = v
+			}
+			if v, err := url.QueryUnescape(sec); err == nil {
+				sec = v
+			}
+			clientID, clientSecret = id, sec
+		}
+		out, err := svc.Token(r.Context(), TokenInput{GrantType: r.Form.Get("grant_type"), Code: r.Form.Get("code"), RedirectURI: r.Form.Get("redirect_uri"), ClientID: clientID, ClientSecret: clientSecret, CodeVerifier: r.Form.Get("code_verifier")})
 		if err != nil {
+			if errors.Is(err, ErrInvalidClient) {
+				w.Header().Set("WWW-Authenticate", `Basic realm="sso"`)
+				httpx.Error(w, 401, "invalid_client")
+				return
+			}
 			httpx.Error(w, 400, err.Error())
 			return
 		}

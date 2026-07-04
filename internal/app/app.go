@@ -15,6 +15,7 @@ import (
 	"github.com/chitushka/sso/internal/oauth"
 	"github.com/chitushka/sso/internal/oidc"
 	"github.com/chitushka/sso/internal/rbac"
+	"github.com/chitushka/sso/internal/secrets"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -42,7 +43,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	rbacSvc := rbac.NewService(rbacRepo, auditRepo)
 	passwords := auth.NewArgon2idHasher()
 	tokens := auth.NewJWTIssuer([]byte(cfg.Security.JWTSecret), cfg.Token.AccessTTL)
-	ldapRepo := ldap.NewPostgresRepository(pool)
+	encryptor := secrets.NewAESGCM(cfg.Security.EncryptionKey)
+	ldapRepo := ldap.NewPostgresRepository(pool, encryptor)
 	ldapClient := ldap.NewClient()
 	ldapSvc := ldap.NewService(ldapRepo, ldapClient, auditRepo)
 	ldapAuth := ldap.NewAuthenticator(ldapRepo, ldapClient, userRepo, auditRepo)
@@ -50,10 +52,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	userSvc := users.NewService(userRepo, passwords, auditRepo)
 	bootstrapSvc := bootstrap.NewService(userRepo, passwords, rbacRepo, auditRepo)
 	oauthRepo := oauth.NewPostgresRepository(pool, passwords)
-	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, tokens, auditRepo)
+	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, tokens, auditRepo, passwords)
 	oidcKeys := oidc.NewPostgresKeyStore(pool)
 	oidcSvc := oidc.NewService(cfg.OIDC.Issuer, oidcKeys)
 	_ = oidcSvc.EnsureActiveKey(ctx)
+	if cfg.OIDC.KeyRotationEnabled {
+		oidcSvc.StartRotation(ctx, logger)
+	}
 	oauthSvc.WithIDTokenIssuer(oidcSvc)
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)

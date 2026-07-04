@@ -1,4 +1,4 @@
-# SSO v0.5.1 — Configuration Refactoring
+# SSO v0.5.2 — Security Fixes
 
 Production-oriented SSO/IdP prototype written in Go.
 
@@ -34,11 +34,12 @@ Release 0.5.1 standardizes all application environment variables under the `SSO_
 | `SSO_HTTP_ADDR` | No | `:8080` | HTTP listen address. |
 | `SSO_DATABASE_URL` | Yes | `postgres://sso:sso@postgres:5432/sso?sslmode=disable` | PostgreSQL connection string. Use `postgres` as host inside Docker Compose. |
 | `SSO_JWT_SECRET` | Yes | `change-me-please-change-me-please-change-me` | JWT signing secret. Must be at least 32 characters. |
+| `SSO_ENCRYPTION_KEY` | Yes | `change-me-please-change-me-please-change-me` | Key for encrypting stored secrets (LDAP bind passwords) with AES-256-GCM. Must be at least 32 characters. |
 | `SSO_ACCESS_TOKEN_TTL` | No | `15m` | Access token lifetime. |
 | `SSO_SESSION_TTL` | No | `720h` | Session lifetime. |
 | `SSO_CORS_ALLOWED_ORIGINS` | No | `http://localhost:3000,http://localhost:5173,http://localhost:8080` | Comma-separated CORS allowed origins. |
 | `SSO_ISSUER` | No | `http://localhost:8080` | OAuth2/OIDC issuer URL. |
-| `SSO_OIDC_KEY_ROTATION_ENABLED` | No | `false` | Reserved OIDC key rotation switch. |
+| `SSO_OIDC_KEY_ROTATION_ENABLED` | No | `false` | Enables background OIDC signing key rotation (new key every 30 days; the previous key stays in JWKS for 24h). |
 | `SSO_LOG_LEVEL` | No | `info` | JSON logger level: `debug`, `info`, `warn`, `error`. |
 
 Deprecated variable names such as `DATABASE_URL`, `SSO_DB_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, and `SESSION_TTL` are intentionally not supported by v0.5.1.
@@ -135,3 +136,11 @@ The following admin APIs now require permissions:
 - `oauth_clients:*`
 
 Run migrations before testing v0.5.1.
+
+## Release 0.5.2 - Security Fixes
+
+- The token endpoint now verifies the confidential client secret (Argon2id). Both `client_secret_post` and `client_secret_basic` are supported; invalid credentials return `401 invalid_client`.
+- Requested scopes are validated against the client's `allowed_scopes`; unknown scopes are rejected with `invalid_scope`.
+- LDAP bind passwords are encrypted at rest with AES-256-GCM using `SSO_ENCRYPTION_KEY` (new required variable). Rows written before 0.5.2 keep working and are re-encrypted on the next update.
+- `SSO_OIDC_KEY_ROTATION_ENABLED=true` activates background signing key rotation.
+- Invalid duration/boolean configuration values now fail startup with a clear error instead of panicking.

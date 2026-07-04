@@ -26,11 +26,17 @@ type Service struct {
 	sessions auth.SessionRepository
 	tokens   auth.JWTIssuer
 	audit    audit.Repository
+	secrets  auth.PasswordHasher
 	idTokens IDTokenIssuer
 }
 
-func NewService(repo Repository, users users.Repository, sessions auth.SessionRepository, tokens auth.JWTIssuer, audit audit.Repository) *Service {
-	return &Service{repo: repo, users: users, sessions: sessions, tokens: tokens, audit: audit}
+var (
+	ErrInvalidClient = errors.New("invalid client credentials")
+	ErrInvalidScope  = errors.New("invalid_scope")
+)
+
+func NewService(repo Repository, users users.Repository, sessions auth.SessionRepository, tokens auth.JWTIssuer, audit audit.Repository, secrets auth.PasswordHasher) *Service {
+	return &Service{repo: repo, users: users, sessions: sessions, tokens: tokens, audit: audit, secrets: secrets}
 }
 func (s *Service) WithIDTokenIssuer(i IDTokenIssuer) *Service { s.idTokens = i; return s }
 
@@ -77,6 +83,9 @@ func (s *Service) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeRe
 	if !contains(c.RedirectURIs, in.RedirectURI) {
 		return AuthorizeResult{}, errors.New("invalid redirect_uri")
 	}
+	if err := validateScope(in.Scope, c.AllowedScopes); err != nil {
+		return AuthorizeResult{}, err
+	}
 	if c.Type == ClientPublic && (in.CodeChallenge == "" || in.CodeChallengeMethod != "S256") {
 		return AuthorizeResult{}, errors.New("PKCE S256 required")
 	}
@@ -119,9 +128,13 @@ func (s *Service) Token(ctx context.Context, in TokenInput) (TokenResult, error)
 		return TokenResult{}, err
 	}
 	if c.Type == ClientConfidential {
-		if c.ClientSecretHash == nil {
-			return TokenResult{}, errors.New("client secret not set")
-		} /* verified in handler hasher? not available; keep for v0.4 demo */
+		if c.ClientSecretHash == nil || in.ClientSecret == "" {
+			return TokenResult{}, ErrInvalidClient
+		}
+		ok, err := s.secrets.Verify(in.ClientSecret, *c.ClientSecretHash)
+		if err != nil || !ok {
+			return TokenResult{}, ErrInvalidClient
+		}
 	}
 	code, err := s.repo.ConsumeCode(ctx, hashCode(in.Code))
 	if err != nil {
@@ -162,6 +175,14 @@ func newCode() (string, string, error) {
 	return raw, hashCode(raw), nil
 }
 func hashCode(code string) string { s := sha256.Sum256([]byte(code)); return hex.EncodeToString(s[:]) }
+func validateScope(requested string, allowed []string) error {
+	for _, sc := range strings.Fields(requested) {
+		if !contains(allowed, sc) {
+			return ErrInvalidScope
+		}
+	}
+	return nil
+}
 func contains(xs []string, x string) bool {
 	for _, v := range xs {
 		if v == x {

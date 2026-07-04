@@ -31,7 +31,8 @@ type DatabaseConfig struct {
 }
 
 type SecurityConfig struct {
-	JWTSecret string
+	JWTSecret     string
+	EncryptionKey string
 }
 
 type TokenConfig struct {
@@ -55,6 +56,22 @@ type LoggingConfig struct {
 func Load() (Config, error) {
 	_ = godotenv.Load()
 
+	var parseErrs []error
+	duration := func(key string, defaultValue time.Duration) time.Duration {
+		v, err := parseDuration(key, defaultValue)
+		if err != nil {
+			parseErrs = append(parseErrs, err)
+		}
+		return v
+	}
+	boolean := func(key string, defaultValue bool) bool {
+		v, err := parseBoolean(key, defaultValue)
+		if err != nil {
+			parseErrs = append(parseErrs, err)
+		}
+		return v
+	}
+
 	cfg := Config{
 		Env: env("SSO_ENV", "local"),
 		HTTP: HTTPConfig{
@@ -64,7 +81,8 @@ func Load() (Config, error) {
 			URL: os.Getenv("SSO_DATABASE_URL"),
 		},
 		Security: SecurityConfig{
-			JWTSecret: os.Getenv("SSO_JWT_SECRET"),
+			JWTSecret:     os.Getenv("SSO_JWT_SECRET"),
+			EncryptionKey: os.Getenv("SSO_ENCRYPTION_KEY"),
 		},
 		Token: TokenConfig{
 			AccessTTL:  duration("SSO_ACCESS_TOKEN_TTL", 15*time.Minute),
@@ -82,6 +100,9 @@ func Load() (Config, error) {
 		},
 	}
 
+	if err := errors.Join(parseErrs...); err != nil {
+		return Config{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -100,6 +121,12 @@ func (c Config) Validate() error {
 	}
 	if len(c.Security.JWTSecret) > 0 && len(c.Security.JWTSecret) < 32 {
 		errs = append(errs, errors.New("SSO_JWT_SECRET must be at least 32 characters"))
+	}
+	if strings.TrimSpace(c.Security.EncryptionKey) == "" {
+		errs = append(errs, errors.New("SSO_ENCRYPTION_KEY is required"))
+	}
+	if len(c.Security.EncryptionKey) > 0 && len(c.Security.EncryptionKey) < 32 {
+		errs = append(errs, errors.New("SSO_ENCRYPTION_KEY must be at least 32 characters"))
 	}
 	if strings.TrimSpace(c.OIDC.Issuer) == "" {
 		errs = append(errs, errors.New("SSO_ISSUER is required"))
@@ -133,30 +160,30 @@ func split(value string) []string {
 	return out
 }
 
-func duration(key string, defaultValue time.Duration) time.Duration {
+func parseDuration(key string, defaultValue time.Duration) (time.Duration, error) {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
-		return defaultValue
+		return defaultValue, nil
 	}
 
 	parsed, err := time.ParseDuration(value)
 	if err != nil {
-		panic(fmt.Sprintf("%s has invalid duration %q: %v", key, value, err))
+		return defaultValue, fmt.Errorf("%s has invalid duration %q: %w", key, value, err)
 	}
 
-	return parsed
+	return parsed, nil
 }
 
-func boolean(key string, defaultValue bool) bool {
+func parseBoolean(key string, defaultValue bool) (bool, error) {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
-		return defaultValue
+		return defaultValue, nil
 	}
 
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
-		panic(fmt.Sprintf("%s has invalid boolean %q: %v", key, value, err))
+		return defaultValue, fmt.Errorf("%s has invalid boolean %q: %w", key, value, err)
 	}
 
-	return parsed
+	return parsed, nil
 }
