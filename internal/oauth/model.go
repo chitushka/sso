@@ -13,16 +13,25 @@ const (
 )
 
 type Client struct {
-	ID               uuid.UUID  `json:"id"`
-	ClientID         string     `json:"client_id"`
-	ClientSecretHash *string    `json:"-"`
-	Name             string     `json:"name"`
-	Type             ClientType `json:"type"`
-	RedirectURIs     []string   `json:"redirect_uris"`
-	AllowedScopes    []string   `json:"allowed_scopes"`
-	Enabled          bool       `json:"enabled"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	ID                     uuid.UUID  `json:"id"`
+	ClientID               string     `json:"client_id"`
+	ClientSecretHash       *string    `json:"-"`
+	Name                   string     `json:"name"`
+	Type                   ClientType `json:"type"`
+	RedirectURIs           []string   `json:"redirect_uris"`
+	AllowedScopes          []string   `json:"allowed_scopes"`
+	PostLogoutRedirectURIs []string   `json:"post_logout_redirect_uris"`
+	BackchannelLogoutURI   string     `json:"backchannel_logout_uri"`
+	SkipConsent            bool       `json:"skip_consent"`
+	Enabled                bool       `json:"enabled"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+}
+type UserConsent struct {
+	UserID    uuid.UUID `json:"user_id"`
+	ClientID  string    `json:"client_id"`
+	Scopes    string    `json:"scopes"`
+	GrantedAt time.Time `json:"granted_at"`
 }
 type RefreshToken struct {
 	ID        uuid.UUID

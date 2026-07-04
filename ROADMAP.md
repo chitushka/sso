@@ -59,6 +59,19 @@ Scope:
 - completed admin CRUD: delete users, update/delete roles, OAuth clients and LDAP providers
 - secret encryption delivered early in v0.5.2 (`SSO_ENCRYPTION_KEY`)
 
+## v0.6.5 — OIDC Completeness
+
+Status: done.
+
+Scope:
+- RP-initiated logout (`/oauth2/logout`, end_session_endpoint) with `id_token_hint`, registered `post_logout_redirect_uris` and session + refresh token revocation
+- back-channel logout (signed `logout_token` POSTed to the client's `backchannel_logout_uri`)
+- consent flow: `user_consents` storage, `consent_required` from authorize, `GET/POST /oauth2/consent`, `skip_consent` for trusted clients
+- `client_credentials` grant for service accounts (confidential clients only)
+- UserInfo claims filtered by token scope
+- RFC 6749 error format (`error` + `error_description`) on all `/oauth2/*` endpoints
+- `GET /api/v1/oauth/clients/{id}`
+
 ## v0.7 — Admin UI
 
 Stack:

@@ -10,6 +10,9 @@ import (
 	"errors"
 	"log/slog"
 	"math/big"
+	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/chitushka/sso/internal/storage"
@@ -121,8 +124,95 @@ func (s *Service) IssueIDToken(ctx context.Context, u users.User, clientID, nonc
 	t.Header["kid"] = k.Kid
 	return t.SignedString(priv)
 }
+
+// VerifyIDToken validates an id_token_hint (RS256 signature via stored public
+// keys, issuer match) and returns its subject and audience.
+func (s *Service) VerifyIDToken(ctx context.Context, raw string) (string, string, error) {
+	keys, err := s.keys.PublicKeys(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	claims := jwt.MapClaims{}
+	token, err := jwt.ParseWithClaims(raw, claims, func(t *jwt.Token) (any, error) {
+		if t.Method.Alg() != jwt.SigningMethodRS256.Alg() {
+			return nil, errors.New("invalid alg")
+		}
+		kid, _ := t.Header["kid"].(string)
+		for _, k := range keys {
+			if k.Kid == kid {
+				block, _ := pem.Decode([]byte(k.PublicKeyPEM))
+				return x509.ParsePKCS1PublicKey(block.Bytes)
+			}
+		}
+		return nil, errors.New("unknown kid")
+	}, jwt.WithIssuer(s.issuer), jwt.WithoutClaimsValidation())
+	if err != nil || !token.Valid {
+		return "", "", errors.New("invalid id token")
+	}
+	// Expiry is deliberately not enforced: RP-initiated logout allows expired hints.
+	if iss, _ := claims["iss"].(string); iss != s.issuer {
+		return "", "", errors.New("invalid issuer")
+	}
+	sub, _ := claims["sub"].(string)
+	aud, _ := claims["aud"].(string)
+	if sub == "" || aud == "" {
+		return "", "", errors.New("missing sub or aud")
+	}
+	return sub, aud, nil
+}
+
+// IssueLogoutToken builds an OIDC back-channel logout token (RS256).
+func (s *Service) IssueLogoutToken(ctx context.Context, sub, clientID string) (string, error) {
+	k, err := s.keys.ActiveKey(ctx)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode([]byte(k.PrivateKeyPEM))
+	priv, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"iss":    s.issuer,
+		"sub":    sub,
+		"aud":    clientID,
+		"iat":    now.Unix(),
+		"exp":    now.Add(2 * time.Minute).Unix(),
+		"jti":    uuid.NewString(),
+		"events": map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}},
+	}
+	t := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	t.Header["kid"] = k.Kid
+	return t.SignedString(priv)
+}
+
+// SendBackchannelLogout POSTs a logout_token to the client's registered URI
+// (OIDC Back-Channel Logout 1.0).
+func (s *Service) SendBackchannelLogout(ctx context.Context, sub, clientID, uri string) error {
+	logoutToken, err := s.IssueLogoutToken(ctx, sub, clientID)
+	if err != nil {
+		return err
+	}
+	form := url.Values{"logout_token": {logoutToken}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uri, strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return errors.New("backchannel logout rejected: " + resp.Status)
+	}
+	return nil
+}
+
 func (s *Service) Discovery() map[string]any {
-	return map[string]any{"issuer": s.issuer, "authorization_endpoint": s.issuer + "/oauth2/authorize", "token_endpoint": s.issuer + "/oauth2/token", "userinfo_endpoint": s.issuer + "/oauth2/userinfo", "revocation_endpoint": s.issuer + "/oauth2/revoke", "introspection_endpoint": s.issuer + "/oauth2/introspect", "jwks_uri": s.issuer + "/.well-known/jwks.json", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"}, "scopes_supported": []string{"openid", "profile", "email"}, "claims_supported": []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "email", "preferred_username"}}
+	return map[string]any{"issuer": s.issuer, "authorization_endpoint": s.issuer + "/oauth2/authorize", "token_endpoint": s.issuer + "/oauth2/token", "userinfo_endpoint": s.issuer + "/oauth2/userinfo", "revocation_endpoint": s.issuer + "/oauth2/revoke", "introspection_endpoint": s.issuer + "/oauth2/introspect", "end_session_endpoint": s.issuer + "/oauth2/logout", "jwks_uri": s.issuer + "/.well-known/jwks.json", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token", "client_credentials"}, "subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"}, "scopes_supported": []string{"openid", "profile", "email"}, "claims_supported": []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "email", "preferred_username"}, "backchannel_logout_supported": true}
 }
 func (s *Service) JWKS(ctx context.Context) (map[string]any, error) {
 	ks, err := s.keys.PublicKeys(ctx)

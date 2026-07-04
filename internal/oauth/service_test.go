@@ -14,13 +14,14 @@ import (
 )
 
 type fakeRepo struct {
-	clients map[string]Client
-	codes   map[string]AuthorizationCode
-	refresh map[string]RefreshToken
+	clients  map[string]Client
+	codes    map[string]AuthorizationCode
+	refresh  map[string]RefreshToken
+	consents map[string]UserConsent
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{clients: map[string]Client{}, codes: map[string]AuthorizationCode{}, refresh: map[string]RefreshToken{}}
+	return &fakeRepo{clients: map[string]Client{}, codes: map[string]AuthorizationCode{}, refresh: map[string]RefreshToken{}, consents: map[string]UserConsent{}}
 }
 func (r *fakeRepo) CreateClient(_ context.Context, c Client) (Client, string, error) {
 	r.clients[c.ClientID] = c
@@ -101,6 +102,35 @@ func (r *fakeRepo) RevokeRefreshFamily(_ context.Context, familyID uuid.UUID) er
 	}
 	return nil
 }
+func (r *fakeRepo) FindClientByID(_ context.Context, id uuid.UUID) (Client, error) {
+	for _, c := range r.clients {
+		if c.ID == id {
+			return c, nil
+		}
+	}
+	return Client{}, storage.ErrNotFound
+}
+func (r *fakeRepo) RevokeRefreshTokensByUser(_ context.Context, userID uuid.UUID) error {
+	now := time.Now()
+	for hash, t := range r.refresh {
+		if t.UserID == userID && t.RevokedAt == nil {
+			t.RevokedAt = &now
+			r.refresh[hash] = t
+		}
+	}
+	return nil
+}
+func (r *fakeRepo) GetConsent(_ context.Context, userID uuid.UUID, clientID string) (UserConsent, error) {
+	c, ok := r.consents[userID.String()+"|"+clientID]
+	if !ok {
+		return UserConsent{}, storage.ErrNotFound
+	}
+	return c, nil
+}
+func (r *fakeRepo) SaveConsent(_ context.Context, c UserConsent) error {
+	r.consents[c.UserID.String()+"|"+c.ClientID] = c
+	return nil
+}
 
 type fakeUsers struct{ u users.User }
 
@@ -171,7 +201,7 @@ func setup(t *testing.T, client Client) (*Service, *fakeRepo, users.User, string
 func strPtr(s string) *string { return &s }
 
 func confidentialClient() Client {
-	return Client{ClientID: "web-app", ClientSecretHash: strPtr("hash:correct-secret"), Type: ClientConfidential, RedirectURIs: []string{"https://app.example.com/cb"}, AllowedScopes: []string{"openid", "profile", "email"}, Enabled: true}
+	return Client{ID: uuid.New(), ClientID: "web-app", ClientSecretHash: strPtr("hash:correct-secret"), Type: ClientConfidential, RedirectURIs: []string{"https://app.example.com/cb"}, AllowedScopes: []string{"openid", "profile", "email"}, PostLogoutRedirectURIs: []string{"https://app.example.com/bye"}, SkipConsent: true, Enabled: true}
 }
 
 func authorize(t *testing.T, svc *Service, session, scope string) AuthorizeResult {
@@ -298,6 +328,79 @@ func TestRefreshGrantRejectsWrongClient(t *testing.T) {
 	first := exchangeCode(t, svc, session)
 	if _, err := svc.Token(context.Background(), TokenInput{GrantType: "refresh_token", RefreshToken: first.RefreshToken, ClientID: "other-app", ClientSecret: "other-secret"}); !errors.Is(err, ErrInvalidGrant) {
 		t.Fatalf("want ErrInvalidGrant for foreign token, got %v", err)
+	}
+}
+
+func TestAuthorizeRequiresConsent(t *testing.T) {
+	client := confidentialClient()
+	client.SkipConsent = false
+	svc, _, _, session := setup(t, client)
+	_, err := svc.Authorize(context.Background(), AuthorizeInput{ResponseType: "code", ClientID: "web-app", RedirectURI: "https://app.example.com/cb", Scope: "openid profile", SessionToken: session})
+	if !errors.Is(err, ErrConsentRequired) {
+		t.Fatalf("want ErrConsentRequired, got %v", err)
+	}
+	if err := svc.GrantConsent(context.Background(), session, "web-app", "openid profile"); err != nil {
+		t.Fatalf("grant consent: %v", err)
+	}
+	res := authorize(t, svc, session, "openid profile")
+	if res.Code == "" {
+		t.Fatal("expected code after consent")
+	}
+	// A wider scope than granted must ask again.
+	if _, err := svc.Authorize(context.Background(), AuthorizeInput{ResponseType: "code", ClientID: "web-app", RedirectURI: "https://app.example.com/cb", Scope: "openid profile email", SessionToken: session}); !errors.Is(err, ErrConsentRequired) {
+		t.Fatalf("wider scope must require consent again, got %v", err)
+	}
+}
+
+func TestClientCredentialsGrant(t *testing.T) {
+	svc, _, _, _ := setup(t, confidentialClient())
+	out, err := svc.Token(context.Background(), TokenInput{GrantType: "client_credentials", ClientID: "web-app", ClientSecret: "correct-secret", Scope: "profile"})
+	if err != nil {
+		t.Fatalf("client_credentials: %v", err)
+	}
+	if out.AccessToken == "" || out.RefreshToken != "" || out.IDToken != "" {
+		t.Fatalf("expected access token only, got %+v", out)
+	}
+	if _, err := svc.Token(context.Background(), TokenInput{GrantType: "client_credentials", ClientID: "web-app", ClientSecret: "wrong", Scope: "profile"}); !errors.Is(err, ErrInvalidClient) {
+		t.Fatalf("wrong secret must fail, got %v", err)
+	}
+	if _, err := svc.Token(context.Background(), TokenInput{GrantType: "client_credentials", ClientID: "web-app", ClientSecret: "correct-secret", Scope: "admin"}); !errors.Is(err, ErrInvalidScope) {
+		t.Fatalf("scope outside allowed_scopes must fail, got %v", err)
+	}
+}
+
+type fakeIDVerifier struct{ sub, aud string }
+
+func (f fakeIDVerifier) VerifyIDToken(_ context.Context, raw string) (string, string, error) {
+	if raw != "valid-hint" {
+		return "", "", errors.New("invalid id token")
+	}
+	return f.sub, f.aud, nil
+}
+
+func TestLogoutRevokesSessionAndTokens(t *testing.T) {
+	svc, repo, u, session := setup(t, confidentialClient())
+	svc.WithIDTokenVerifier(fakeIDVerifier{sub: u.ID.String(), aud: "web-app"})
+	out := exchangeCode(t, svc, session)
+	redirect, err := svc.Logout(context.Background(), LogoutInput{SessionToken: session, IDTokenHint: "valid-hint", PostLogoutRedirectURI: "https://app.example.com/bye", State: "xyz"})
+	if err != nil {
+		t.Fatalf("logout: %v", err)
+	}
+	if redirect != "https://app.example.com/bye?state=xyz" {
+		t.Fatalf("unexpected redirect %q", redirect)
+	}
+	// Refresh token must be revoked.
+	if _, err := svc.Token(context.Background(), TokenInput{GrantType: "refresh_token", RefreshToken: out.RefreshToken, ClientID: "web-app", ClientSecret: "correct-secret"}); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("refresh after logout must fail, got %v", err)
+	}
+	_ = repo
+}
+
+func TestLogoutRejectsUnregisteredRedirect(t *testing.T) {
+	svc, _, u, session := setup(t, confidentialClient())
+	svc.WithIDTokenVerifier(fakeIDVerifier{sub: u.ID.String(), aud: "web-app"})
+	if _, err := svc.Logout(context.Background(), LogoutInput{SessionToken: session, IDTokenHint: "valid-hint", PostLogoutRedirectURI: "https://evil.example.com/"}); !errors.Is(err, ErrInvalidRedirect) {
+		t.Fatalf("want ErrInvalidRedirect, got %v", err)
 	}
 }
 

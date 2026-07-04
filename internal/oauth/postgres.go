@@ -23,14 +23,14 @@ func NewPostgresRepository(pool *pgxpool.Pool, hasher auth.PasswordHasher) *Post
 }
 func scanClient(row pgx.Row) (Client, error) {
 	var c Client
-	err := row.Scan(&c.ID, &c.ClientID, &c.ClientSecretHash, &c.Name, &c.Type, &c.RedirectURIs, &c.AllowedScopes, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.ClientID, &c.ClientSecretHash, &c.Name, &c.Type, &c.RedirectURIs, &c.AllowedScopes, &c.PostLogoutRedirectURIs, &c.BackchannelLogoutURI, &c.SkipConsent, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, storage.ErrNotFound
 	}
 	return c, err
 }
 
-const clientCols = "id,client_id,client_secret_hash,name,type,redirect_uris,allowed_scopes,enabled,created_at,updated_at"
+const clientCols = "id,client_id,client_secret_hash,name,type,redirect_uris,allowed_scopes,post_logout_redirect_uris,backchannel_logout_uri,skip_consent,enabled,created_at,updated_at"
 
 func secret() (string, error) {
 	b := make([]byte, 32)
@@ -54,7 +54,7 @@ func (r *PostgresRepository) CreateClient(ctx context.Context, c Client) (Client
 		raw = s
 		hash = &h
 	}
-	row := r.pool.QueryRow(ctx, `INSERT INTO oauth_clients(client_id,client_secret_hash,name,type,redirect_uris,allowed_scopes,enabled) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING `+clientCols, c.ClientID, hash, c.Name, c.Type, c.RedirectURIs, c.AllowedScopes, c.Enabled)
+	row := r.pool.QueryRow(ctx, `INSERT INTO oauth_clients(client_id,client_secret_hash,name,type,redirect_uris,allowed_scopes,post_logout_redirect_uris,backchannel_logout_uri,skip_consent,enabled) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING `+clientCols, c.ClientID, hash, c.Name, c.Type, c.RedirectURIs, c.AllowedScopes, c.PostLogoutRedirectURIs, c.BackchannelLogoutURI, c.SkipConsent, c.Enabled)
 	out, err := scanClient(row)
 	return out, raw, err
 }
@@ -78,7 +78,10 @@ func (r *PostgresRepository) FindClientByClientID(ctx context.Context, clientID 
 	return scanClient(r.pool.QueryRow(ctx, `SELECT `+clientCols+` FROM oauth_clients WHERE client_id=$1`, clientID))
 }
 func (r *PostgresRepository) UpdateClient(ctx context.Context, c Client) (Client, error) {
-	return scanClient(r.pool.QueryRow(ctx, `UPDATE oauth_clients SET name=$2,redirect_uris=$3,allowed_scopes=$4,enabled=$5,updated_at=now() WHERE id=$1 RETURNING `+clientCols, c.ID, c.Name, c.RedirectURIs, c.AllowedScopes, c.Enabled))
+	return scanClient(r.pool.QueryRow(ctx, `UPDATE oauth_clients SET name=$2,redirect_uris=$3,allowed_scopes=$4,post_logout_redirect_uris=$5,backchannel_logout_uri=$6,skip_consent=$7,enabled=$8,updated_at=now() WHERE id=$1 RETURNING `+clientCols, c.ID, c.Name, c.RedirectURIs, c.AllowedScopes, c.PostLogoutRedirectURIs, c.BackchannelLogoutURI, c.SkipConsent, c.Enabled))
+}
+func (r *PostgresRepository) FindClientByID(ctx context.Context, id uuid.UUID) (Client, error) {
+	return scanClient(r.pool.QueryRow(ctx, `SELECT `+clientCols+` FROM oauth_clients WHERE id=$1`, id))
 }
 func (r *PostgresRepository) DeleteClient(ctx context.Context, id uuid.UUID) error {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM oauth_clients WHERE id=$1`, id)
@@ -110,6 +113,23 @@ func (r *PostgresRepository) MarkRefreshTokenRotated(ctx context.Context, id uui
 }
 func (r *PostgresRepository) RevokeRefreshFamily(ctx context.Context, familyID uuid.UUID) error {
 	_, err := r.pool.Exec(ctx, `UPDATE refresh_tokens SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL`, familyID)
+	return err
+}
+func (r *PostgresRepository) RevokeRefreshTokensByUser(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.pool.Exec(ctx, `UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, userID)
+	return err
+}
+func (r *PostgresRepository) GetConsent(ctx context.Context, userID uuid.UUID, clientID string) (UserConsent, error) {
+	var c UserConsent
+	err := r.pool.QueryRow(ctx, `SELECT user_id,client_id,scopes,granted_at FROM user_consents WHERE user_id=$1 AND client_id=$2`, userID, clientID).Scan(&c.UserID, &c.ClientID, &c.Scopes, &c.GrantedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return c, storage.ErrNotFound
+	}
+	return c, err
+}
+func (r *PostgresRepository) SaveConsent(ctx context.Context, c UserConsent) error {
+	_, err := r.pool.Exec(ctx, `INSERT INTO user_consents(user_id,client_id,scopes) VALUES($1,$2,$3)
+ON CONFLICT (user_id, client_id) DO UPDATE SET scopes=EXCLUDED.scopes, updated_at=now()`, c.UserID, c.ClientID, c.Scopes)
 	return err
 }
 func (r *PostgresRepository) CreateCode(ctx context.Context, c AuthorizationCode) (AuthorizationCode, error) {

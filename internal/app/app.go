@@ -60,7 +60,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	if cfg.OIDC.KeyRotationEnabled {
 		oidcSvc.StartRotation(ctx, logger)
 	}
-	oauthSvc.WithIDTokenIssuer(oidcSvc)
+	oauthSvc.WithIDTokenIssuer(oidcSvc).WithIDTokenVerifier(oidcSvc).WithBackchannel(oidcSvc)
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer(logger))

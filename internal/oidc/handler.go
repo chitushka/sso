@@ -1,12 +1,14 @@
 package oidc
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/httpx"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"net/http"
 )
 
 func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, bearerAuth func(http.Handler) http.Handler) {
@@ -31,6 +33,18 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, beare
 			httpx.Error(w, 404, "user not found")
 			return
 		}
-		httpx.JSON(w, 200, map[string]any{"sub": u.ID.String(), "preferred_username": u.Username, "email": u.Email, "source": u.Source})
+		out := map[string]any{"sub": u.ID.String()}
+		// Claims are filtered by the token's scope; tokens without a scope claim
+		// (issued by the local login endpoint) keep the pre-v0.6.5 full response.
+		scope := " " + claims.Scope + " "
+		full := claims.Scope == ""
+		if full || strings.Contains(scope, " profile ") {
+			out["preferred_username"] = u.Username
+			out["source"] = u.Source
+		}
+		if full || strings.Contains(scope, " email ") {
+			out["email"] = u.Email
+		}
+		httpx.JSON(w, 200, out)
 	})
 }

@@ -1,4 +1,4 @@
-# SSO v0.6 — Security Hardening
+# SSO v0.6.5 — OIDC Completeness
 
 Production-oriented SSO/IdP prototype written in Go.
 
@@ -97,6 +97,17 @@ POST /oauth2/introspect  (token=...)
 
 The token endpoint returns a `refresh_token` alongside the access token. Refresh tokens are single-use and rotated on every refresh; reusing an already-rotated token revokes the entire token family. Client credentials are accepted as `client_secret_post` or `client_secret_basic`.
 
+Logout, consent and service accounts (v0.6.5):
+
+```http
+GET/POST /oauth2/logout  (id_token_hint=...&post_logout_redirect_uri=...&state=...)
+GET  /oauth2/consent?client_id=...&scope=...
+POST /oauth2/consent     ({"client_id": "...", "scope": "..."})
+POST /oauth2/token       (grant_type=client_credentials&scope=...)
+```
+
+All `/oauth2/*` errors follow RFC 6749: `{"error": "...", "error_description": "..."}`.
+
 ## Release 0.5 - RBAC
 
 Release 0.5 adds role-based access control.
@@ -170,3 +181,14 @@ Run migration `000006_security_hardening` before starting v0.6.
   - `PUT/DELETE /api/v1/roles/{roleID}` (`roles:update` / `roles:delete`); built-in `admin`/`user` roles cannot be deleted
   - `PUT/DELETE /api/v1/oauth/clients/{id}` (`oauth_clients:update` / `oauth_clients:delete`)
   - `PUT/DELETE /api/v1/ldap/providers/{id}` (`ldap:update` / `ldap:delete`); an empty `bind_password` on update keeps the stored secret
+
+## Release 0.6.5 - OIDC Completeness
+
+Run migration `000007_oidc_completeness` before starting v0.6.5.
+
+- **RP-initiated logout**: `GET/POST /oauth2/logout` (advertised as `end_session_endpoint`). Accepts `id_token_hint` (validated against JWKS), `post_logout_redirect_uri` (must be registered in the client's `post_logout_redirect_uris`) and `state`. Revokes the SSO session and all refresh tokens of the user.
+- **Back-channel logout**: if the client has `backchannel_logout_uri`, a signed `logout_token` (RS256) is POSTed to it on logout.
+- **Consent**: `/oauth2/authorize` returns `403 consent_required` until the user grants the requested scopes. `GET /oauth2/consent` shows what is requested, `POST /oauth2/consent` grants it (scopes are merged with previous grants). Trusted first-party clients can set `skip_consent: true`.
+- **client_credentials grant**: service-to-service tokens for confidential clients; `sub` is the client's internal id, no refresh or ID token, scope validated against `allowed_scopes`.
+- **UserInfo scope filtering**: `profile` → `preferred_username`, `source`; `email` → `email`. Tokens without a scope claim keep the full response.
+- New client fields: `post_logout_redirect_uris`, `backchannel_logout_uri`, `skip_consent` (create and update APIs). `GET /api/v1/oauth/clients/{id}` added.
