@@ -35,6 +35,19 @@ func NewJWTIssuer(secret []byte, ttl time.Duration) *HMACJWTIssuer {
 func (i *HMACJWTIssuer) Issue(u users.User) (string, time.Time, error) {
 	return i.IssueOAuthAccessToken(u, "", "")
 }
+func (i *HMACJWTIssuer) Verify(tokenStr string) (*Claims, error) {
+	claims := &Claims{}
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
+		if t.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, errors.New("invalid alg")
+		}
+		return i.secret, nil
+	})
+	if err != nil || !token.Valid {
+		return nil, errors.New("invalid token")
+	}
+	return claims, nil
+}
 func (i *HMACJWTIssuer) IssueOAuthAccessToken(u users.User, clientID, scope string) (string, time.Time, error) {
 	exp := time.Now().Add(i.ttl)
 	claims := Claims{UserID: u.ID.String(), Username: u.Username, Email: u.Email, Source: u.Source, ClientID: clientID, Scope: scope, RegisteredClaims: jwt.RegisteredClaims{Subject: u.ID.String(), ExpiresAt: jwt.NewNumericDate(exp), IssuedAt: jwt.NewNumericDate(time.Now())}}

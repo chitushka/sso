@@ -26,6 +26,10 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, jwtSe
 			}
 			res, err := svc.Login(r.Context(), LoginInput{Username: req.Username, Password: req.Password, IP: clientIP(r), UserAgent: r.UserAgent()})
 			if err != nil {
+				if errors.Is(err, ErrLoginLocked) {
+					httpx.Error(w, 429, "too many failed attempts, try again later")
+					return
+				}
 				if errors.Is(err, ErrInvalidCredentials) || errors.Is(err, ErrUserBlocked) {
 					httpx.Error(w, 401, "invalid credentials")
 					return

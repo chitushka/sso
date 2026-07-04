@@ -87,6 +87,13 @@ func (f *fakeRBAC) FindRoleByCode(_ context.Context, code string) (rbac.Role, er
 	}
 	return f.role, nil
 }
+func (f *fakeRBAC) FindRoleByID(context.Context, uuid.UUID) (rbac.Role, error) {
+	return f.role, nil
+}
+func (f *fakeRBAC) UpdateRole(_ context.Context, role rbac.Role) (rbac.Role, error) {
+	return role, nil
+}
+func (f *fakeRBAC) DeleteRole(context.Context, uuid.UUID) error                { return nil }
 func (f *fakeRBAC) ListPermissions(context.Context) ([]rbac.Permission, error) { return nil, nil }
 func (f *fakeRBAC) ListUserRoles(context.Context, uuid.UUID) ([]rbac.Role, error) {
 	return nil, nil

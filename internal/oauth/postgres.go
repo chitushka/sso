@@ -8,6 +8,7 @@ import (
 
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/storage"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -75,6 +76,41 @@ func (r *PostgresRepository) ListClients(ctx context.Context) ([]Client, error) 
 }
 func (r *PostgresRepository) FindClientByClientID(ctx context.Context, clientID string) (Client, error) {
 	return scanClient(r.pool.QueryRow(ctx, `SELECT `+clientCols+` FROM oauth_clients WHERE client_id=$1`, clientID))
+}
+func (r *PostgresRepository) UpdateClient(ctx context.Context, c Client) (Client, error) {
+	return scanClient(r.pool.QueryRow(ctx, `UPDATE oauth_clients SET name=$2,redirect_uris=$3,allowed_scopes=$4,enabled=$5,updated_at=now() WHERE id=$1 RETURNING `+clientCols, c.ID, c.Name, c.RedirectURIs, c.AllowedScopes, c.Enabled))
+}
+func (r *PostgresRepository) DeleteClient(ctx context.Context, id uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM oauth_clients WHERE id=$1`, id)
+	if err == nil && tag.RowsAffected() == 0 {
+		return storage.ErrNotFound
+	}
+	return err
+}
+
+const refreshCols = "id,token_hash,family_id,user_id,client_id,scope,expires_at,rotated_at,revoked_at,created_at"
+
+func scanRefreshToken(row pgx.Row) (RefreshToken, error) {
+	var t RefreshToken
+	err := row.Scan(&t.ID, &t.TokenHash, &t.FamilyID, &t.UserID, &t.ClientID, &t.Scope, &t.ExpiresAt, &t.RotatedAt, &t.RevokedAt, &t.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return t, storage.ErrNotFound
+	}
+	return t, err
+}
+func (r *PostgresRepository) CreateRefreshToken(ctx context.Context, t RefreshToken) (RefreshToken, error) {
+	return scanRefreshToken(r.pool.QueryRow(ctx, `INSERT INTO refresh_tokens(token_hash,family_id,user_id,client_id,scope,expires_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING `+refreshCols, t.TokenHash, t.FamilyID, t.UserID, t.ClientID, t.Scope, t.ExpiresAt))
+}
+func (r *PostgresRepository) FindRefreshTokenByHash(ctx context.Context, hash string) (RefreshToken, error) {
+	return scanRefreshToken(r.pool.QueryRow(ctx, `SELECT `+refreshCols+` FROM refresh_tokens WHERE token_hash=$1`, hash))
+}
+func (r *PostgresRepository) MarkRefreshTokenRotated(ctx context.Context, id uuid.UUID) error {
+	_, err := r.pool.Exec(ctx, `UPDATE refresh_tokens SET rotated_at=now() WHERE id=$1`, id)
+	return err
+}
+func (r *PostgresRepository) RevokeRefreshFamily(ctx context.Context, familyID uuid.UUID) error {
+	_, err := r.pool.Exec(ctx, `UPDATE refresh_tokens SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL`, familyID)
+	return err
 }
 func (r *PostgresRepository) CreateCode(ctx context.Context, c AuthorizationCode) (AuthorizationCode, error) {
 	err := r.pool.QueryRow(ctx, `INSERT INTO oauth_authorization_codes(code_hash,client_id,user_id,redirect_uri,scope,code_challenge,code_challenge_method,nonce,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,created_at`, c.CodeHash, c.ClientID, c.UserID, c.RedirectURI, c.Scope, c.CodeChallenge, c.CodeChallengeMethod, c.Nonce, c.ExpiresAt).Scan(&c.ID, &c.CreatedAt)

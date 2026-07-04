@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/users"
+	"github.com/google/uuid"
 )
 
 type Service struct {
@@ -35,6 +36,29 @@ func (s *Service) Create(ctx context.Context, p Provider) (Provider, error) {
 }
 func (s *Service) List(ctx context.Context) ([]Provider, error) { return s.repo.List(ctx) }
 func (s *Service) Test(ctx context.Context, p Provider) error   { return s.client.TestConnection(ctx, p) }
+func (s *Service) Update(ctx context.Context, p Provider) (Provider, error) {
+	// An empty bind password keeps the stored one so admins can update
+	// connection settings without re-entering the secret.
+	if p.BindPassword == "" {
+		current, err := s.repo.FindByID(ctx, p.ID)
+		if err != nil {
+			return Provider{}, err
+		}
+		p.BindPassword = current.BindPassword
+	}
+	out, err := s.repo.Update(ctx, p)
+	if err == nil {
+		_ = s.audit.Write(ctx, audit.Event{Action: "ldap_provider_updated", TargetType: "ldap_provider", TargetID: out.ID.String()})
+	}
+	return out, err
+}
+func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	_ = s.audit.Write(ctx, audit.Event{Action: "ldap_provider_deleted", TargetType: "ldap_provider", TargetID: id.String()})
+	return nil
+}
 
 type Authenticator struct {
 	repo   Repository

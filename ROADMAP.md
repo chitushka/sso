@@ -48,12 +48,16 @@ Scope:
 
 ## v0.6 — Security Hardening
 
-Planned:
-- rate limiting
-- brute force protection
-- refresh token rotation
-- secret encryption
-- stricter audit policy
+Status: done.
+
+Scope:
+- refresh tokens with rotation and reuse detection (family revocation)
+- token revocation (RFC 7009) and introspection (RFC 7662) endpoints
+- brute force protection with exponential lockout per (username, IP)
+- rate limiting on login, token and bootstrap endpoints
+- audit log read API (`audit:read` permission)
+- completed admin CRUD: delete users, update/delete roles, OAuth clients and LDAP providers
+- secret encryption delivered early in v0.5.2 (`SSO_ENCRYPTION_KEY`)
 
 ## v0.7 — Admin UI
 

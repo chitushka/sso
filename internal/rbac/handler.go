@@ -38,6 +38,48 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			httpx.JSON(w, http.StatusCreated, out)
 		})
+		r.With(RequirePermission(repo, "roles", "update")).Put("/{roleID}", func(w http.ResponseWriter, r *http.Request) {
+			roleID, err := uuid.Parse(chi.URLParam(r, "roleID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid role id")
+				return
+			}
+			var req UpdateRoleInput
+			if err := httpx.Decode(r, &req); err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid json body")
+				return
+			}
+			out, err := svc.UpdateRole(r.Context(), roleID, req)
+			if err != nil {
+				if errors.Is(err, storage.ErrNotFound) {
+					httpx.Error(w, http.StatusNotFound, "role not found")
+					return
+				}
+				httpx.Error(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			httpx.JSON(w, http.StatusOK, out)
+		})
+		r.With(RequirePermission(repo, "roles", "delete")).Delete("/{roleID}", func(w http.ResponseWriter, r *http.Request) {
+			roleID, err := uuid.Parse(chi.URLParam(r, "roleID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid role id")
+				return
+			}
+			if err := svc.DeleteRole(r.Context(), roleID); err != nil {
+				if errors.Is(err, storage.ErrNotFound) {
+					httpx.Error(w, http.StatusNotFound, "role not found")
+					return
+				}
+				if errors.Is(err, ErrBuiltInRole) {
+					httpx.Error(w, http.StatusConflict, err.Error())
+					return
+				}
+				httpx.Error(w, http.StatusInternalServerError, "failed to delete role")
+				return
+			}
+			httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+		})
 		r.With(RequirePermission(repo, "permissions", "read")).Get("/{roleID}/permissions", func(w http.ResponseWriter, r *http.Request) {
 			roleID, err := uuid.Parse(chi.URLParam(r, "roleID"))
 			if err != nil {

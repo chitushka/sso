@@ -43,6 +43,41 @@ func (s *Service) CreateRole(ctx context.Context, in CreateRoleInput) (Role, err
 	return role, nil
 }
 
+var ErrBuiltInRole = errors.New("built-in roles cannot be deleted")
+
+type UpdateRoleInput struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+func (s *Service) UpdateRole(ctx context.Context, id uuid.UUID, in UpdateRoleInput) (Role, error) {
+	in.Name = strings.TrimSpace(in.Name)
+	if in.Name == "" {
+		return Role{}, errors.New("role name is required")
+	}
+	role, err := s.repo.UpdateRole(ctx, Role{ID: id, Name: in.Name, Description: in.Description})
+	if err != nil {
+		return Role{}, err
+	}
+	_ = s.audit.Write(ctx, audit.Event{Action: "role_updated", TargetType: "role", TargetID: role.ID.String()})
+	return role, nil
+}
+
+func (s *Service) DeleteRole(ctx context.Context, id uuid.UUID) error {
+	role, err := s.repo.FindRoleByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if role.Code == "admin" || role.Code == "user" {
+		return ErrBuiltInRole
+	}
+	if err := s.repo.DeleteRole(ctx, id); err != nil {
+		return err
+	}
+	_ = s.audit.Write(ctx, audit.Event{Action: "role_deleted", TargetType: "role", TargetID: id.String()})
+	return nil
+}
+
 func (s *Service) AssignRoleToUser(ctx context.Context, userID, roleID uuid.UUID) error {
 	if err := s.repo.AssignRoleToUser(ctx, userID, roleID); err != nil {
 		return err

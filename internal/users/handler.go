@@ -54,6 +54,22 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			httpx.JSON(w, 200, u)
 		})
+		r.With(require("users", "delete")).Delete("/{id}", func(w http.ResponseWriter, r *http.Request) {
+			id, err := uuid.Parse(chi.URLParam(r, "id"))
+			if err != nil {
+				httpx.Error(w, 400, "invalid id")
+				return
+			}
+			if err := svc.Delete(r.Context(), id, clientIP(r), r.UserAgent()); err != nil {
+				if errors.Is(err, storage.ErrNotFound) {
+					httpx.Error(w, 404, "user not found")
+					return
+				}
+				httpx.Error(w, 500, "failed to delete user")
+				return
+			}
+			httpx.JSON(w, 200, map[string]string{"status": "deleted"})
+		})
 		r.With(require("users", "update")).Put("/{id}", func(w http.ResponseWriter, r *http.Request) {
 			id, err := uuid.Parse(chi.URLParam(r, "id"))
 			if err != nil {

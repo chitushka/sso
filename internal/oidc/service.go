@@ -122,7 +122,7 @@ func (s *Service) IssueIDToken(ctx context.Context, u users.User, clientID, nonc
 	return t.SignedString(priv)
 }
 func (s *Service) Discovery() map[string]any {
-	return map[string]any{"issuer": s.issuer, "authorization_endpoint": s.issuer + "/oauth2/authorize", "token_endpoint": s.issuer + "/oauth2/token", "userinfo_endpoint": s.issuer + "/oauth2/userinfo", "jwks_uri": s.issuer + "/.well-known/jwks.json", "response_types_supported": []string{"code"}, "subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"}, "scopes_supported": []string{"openid", "profile", "email"}, "claims_supported": []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "email", "preferred_username"}}
+	return map[string]any{"issuer": s.issuer, "authorization_endpoint": s.issuer + "/oauth2/authorize", "token_endpoint": s.issuer + "/oauth2/token", "userinfo_endpoint": s.issuer + "/oauth2/userinfo", "revocation_endpoint": s.issuer + "/oauth2/revoke", "introspection_endpoint": s.issuer + "/oauth2/introspect", "jwks_uri": s.issuer + "/.well-known/jwks.json", "response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"}, "scopes_supported": []string{"openid", "profile", "email"}, "claims_supported": []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "email", "preferred_username"}}
 }
 func (s *Service) JWKS(ctx context.Context) (map[string]any, error) {
 	ks, err := s.keys.PublicKeys(ctx)

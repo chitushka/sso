@@ -16,10 +16,11 @@ import (
 type fakeRepo struct {
 	clients map[string]Client
 	codes   map[string]AuthorizationCode
+	refresh map[string]RefreshToken
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{clients: map[string]Client{}, codes: map[string]AuthorizationCode{}}
+	return &fakeRepo{clients: map[string]Client{}, codes: map[string]AuthorizationCode{}, refresh: map[string]RefreshToken{}}
 }
 func (r *fakeRepo) CreateClient(_ context.Context, c Client) (Client, string, error) {
 	r.clients[c.ClientID] = c
@@ -47,6 +48,58 @@ func (r *fakeRepo) ConsumeCode(_ context.Context, hash string) (AuthorizationCod
 	c.UsedAt = &now
 	r.codes[hash] = c
 	return c, nil
+}
+func (r *fakeRepo) UpdateClient(_ context.Context, c Client) (Client, error) {
+	for id, old := range r.clients {
+		if old.ID == c.ID {
+			c.ClientID = old.ClientID
+			r.clients[id] = c
+			return c, nil
+		}
+	}
+	return Client{}, storage.ErrNotFound
+}
+func (r *fakeRepo) DeleteClient(_ context.Context, id uuid.UUID) error {
+	for key, c := range r.clients {
+		if c.ID == id {
+			delete(r.clients, key)
+			return nil
+		}
+	}
+	return storage.ErrNotFound
+}
+func (r *fakeRepo) CreateRefreshToken(_ context.Context, t RefreshToken) (RefreshToken, error) {
+	t.ID = uuid.New()
+	t.CreatedAt = time.Now()
+	r.refresh[t.TokenHash] = t
+	return t, nil
+}
+func (r *fakeRepo) FindRefreshTokenByHash(_ context.Context, hash string) (RefreshToken, error) {
+	t, ok := r.refresh[hash]
+	if !ok {
+		return RefreshToken{}, storage.ErrNotFound
+	}
+	return t, nil
+}
+func (r *fakeRepo) MarkRefreshTokenRotated(_ context.Context, id uuid.UUID) error {
+	now := time.Now()
+	for hash, t := range r.refresh {
+		if t.ID == id {
+			t.RotatedAt = &now
+			r.refresh[hash] = t
+		}
+	}
+	return nil
+}
+func (r *fakeRepo) RevokeRefreshFamily(_ context.Context, familyID uuid.UUID) error {
+	now := time.Now()
+	for hash, t := range r.refresh {
+		if t.FamilyID == familyID && t.RevokedAt == nil {
+			t.RevokedAt = &now
+			r.refresh[hash] = t
+		}
+	}
+	return nil
 }
 
 type fakeUsers struct{ u users.User }
@@ -185,5 +238,90 @@ func TestTokenRejectsCodeReuse(t *testing.T) {
 	}
 	if _, err := svc.Token(context.Background(), in); err == nil {
 		t.Fatal("second exchange must fail")
+	}
+}
+
+func exchangeCode(t *testing.T, svc *Service, session string) TokenResult {
+	t.Helper()
+	res := authorize(t, svc, session, "profile")
+	out, err := svc.Token(context.Background(), TokenInput{GrantType: "authorization_code", Code: res.Code, RedirectURI: "https://app.example.com/cb", ClientID: "web-app", ClientSecret: "correct-secret"})
+	if err != nil {
+		t.Fatalf("code exchange: %v", err)
+	}
+	return out
+}
+
+func TestTokenIssuesRefreshToken(t *testing.T) {
+	svc, _, _, session := setup(t, confidentialClient())
+	out := exchangeCode(t, svc, session)
+	if out.RefreshToken == "" {
+		t.Fatal("expected refresh_token in response")
+	}
+}
+
+func TestRefreshGrantRotatesToken(t *testing.T) {
+	svc, _, _, session := setup(t, confidentialClient())
+	first := exchangeCode(t, svc, session)
+	second, err := svc.Token(context.Background(), TokenInput{GrantType: "refresh_token", RefreshToken: first.RefreshToken, ClientID: "web-app", ClientSecret: "correct-secret"})
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if second.RefreshToken == "" || second.RefreshToken == first.RefreshToken {
+		t.Fatal("refresh must return a new rotated token")
+	}
+	if second.AccessToken == "" {
+		t.Fatal("refresh must return an access token")
+	}
+}
+
+func TestRefreshReuseRevokesFamily(t *testing.T) {
+	svc, repo, _, session := setup(t, confidentialClient())
+	first := exchangeCode(t, svc, session)
+	second, err := svc.Token(context.Background(), TokenInput{GrantType: "refresh_token", RefreshToken: first.RefreshToken, ClientID: "web-app", ClientSecret: "correct-secret"})
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	// Reuse of the already-rotated first token must fail and revoke the family.
+	if _, err := svc.Token(context.Background(), TokenInput{GrantType: "refresh_token", RefreshToken: first.RefreshToken, ClientID: "web-app", ClientSecret: "correct-secret"}); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("want ErrInvalidGrant on reuse, got %v", err)
+	}
+	if _, err := svc.Token(context.Background(), TokenInput{GrantType: "refresh_token", RefreshToken: second.RefreshToken, ClientID: "web-app", ClientSecret: "correct-secret"}); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("descendant token must be revoked after reuse, got %v", err)
+	}
+	_ = repo
+}
+
+func TestRefreshGrantRejectsWrongClient(t *testing.T) {
+	svc, repo, _, session := setup(t, confidentialClient())
+	other := Client{ID: uuid.New(), ClientID: "other-app", ClientSecretHash: strPtr("hash:other-secret"), Type: ClientConfidential, RedirectURIs: []string{"https://other.example.com/cb"}, AllowedScopes: []string{"openid"}, Enabled: true}
+	repo.clients[other.ClientID] = other
+	first := exchangeCode(t, svc, session)
+	if _, err := svc.Token(context.Background(), TokenInput{GrantType: "refresh_token", RefreshToken: first.RefreshToken, ClientID: "other-app", ClientSecret: "other-secret"}); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("want ErrInvalidGrant for foreign token, got %v", err)
+	}
+}
+
+func TestRevokeAndIntrospect(t *testing.T) {
+	svc, _, _, session := setup(t, confidentialClient())
+	out := exchangeCode(t, svc, session)
+	res, err := svc.Introspect(context.Background(), IntrospectInput{Token: out.RefreshToken, ClientID: "web-app", ClientSecret: "correct-secret"})
+	if err != nil {
+		t.Fatalf("introspect: %v", err)
+	}
+	if res["active"] != true {
+		t.Fatalf("token must be active, got %v", res)
+	}
+	if err := svc.Revoke(context.Background(), RevokeInput{Token: out.RefreshToken, ClientID: "web-app", ClientSecret: "correct-secret"}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	res, err = svc.Introspect(context.Background(), IntrospectInput{Token: out.RefreshToken, ClientID: "web-app", ClientSecret: "correct-secret"})
+	if err != nil {
+		t.Fatalf("introspect after revoke: %v", err)
+	}
+	if res["active"] != false {
+		t.Fatalf("token must be inactive after revoke, got %v", res)
+	}
+	if _, err := svc.Token(context.Background(), TokenInput{GrantType: "refresh_token", RefreshToken: out.RefreshToken, ClientID: "web-app", ClientSecret: "correct-secret"}); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("revoked token must not refresh, got %v", err)
 	}
 }

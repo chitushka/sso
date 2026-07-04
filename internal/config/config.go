@@ -38,6 +38,7 @@ type SecurityConfig struct {
 type TokenConfig struct {
 	AccessTTL  time.Duration
 	SessionTTL time.Duration
+	RefreshTTL time.Duration
 }
 
 type CORSConfig struct {
@@ -87,6 +88,7 @@ func Load() (Config, error) {
 		Token: TokenConfig{
 			AccessTTL:  duration("SSO_ACCESS_TOKEN_TTL", 15*time.Minute),
 			SessionTTL: duration("SSO_SESSION_TTL", 720*time.Hour),
+			RefreshTTL: duration("SSO_REFRESH_TOKEN_TTL", 720*time.Hour),
 		},
 		CORS: CORSConfig{
 			AllowedOrigins: split(env("SSO_CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8080")),
@@ -136,6 +138,9 @@ func (c Config) Validate() error {
 	}
 	if c.Token.SessionTTL <= 0 {
 		errs = append(errs, errors.New("SSO_SESSION_TTL must be positive"))
+	}
+	if c.Token.RefreshTTL <= 0 {
+		errs = append(errs, errors.New("SSO_REFRESH_TOKEN_TTL must be positive"))
 	}
 
 	return errors.Join(errs...)
