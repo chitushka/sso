@@ -182,7 +182,7 @@ func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (e
 	if err != nil {
 		return externalIdentity{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var tok struct {
 		AccessToken string `json:"access_token"`
@@ -200,7 +200,7 @@ func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (e
 	if err != nil {
 		return externalIdentity{}, err
 	}
-	defer uresp.Body.Close()
+	defer func() { _ = uresp.Body.Close() }()
 	ubody, _ := io.ReadAll(io.LimitReader(uresp.Body, 1<<20))
 	var m map[string]any
 	if err := json.Unmarshal(ubody, &m); err != nil {

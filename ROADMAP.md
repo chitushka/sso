@@ -102,6 +102,19 @@ Scope:
 - extended user profile: first/last name, JSONB attributes, email_verified, mfa_enabled
 - UI: forgot/reset password, email verification, account page (MFA + QR), groups admin, mapping editor
 
+## v1.0 — Production Readiness
+
+Status: done.
+
+Scope:
+- GitHub Actions CI: fmt/vet/unit/integration tests, golangci-lint, Vue build, Docker build
+- embedded migrations applied on start (`SSO_MIGRATE_ON_START`)
+- integration test suite against a real Postgres (build tag `integration`)
+- golangci-lint config (gosec included)
+- trusted-proxy-aware client IP (`SSO_TRUSTED_PROXIES`) — fixes brute-force/rate-limit bypass
+- `/metrics` (Prometheus) and `/health/version`
+- docker-compose hardening (healthcheck, restart policy, migrate-on-start, secrets via env), versioned binary
+
 ## v0.9 — Federation & polish
 
 Status: done.

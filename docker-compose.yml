@@ -9,6 +9,12 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sso -d sso"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   ldap:
     image: osixia/openldap:1.5.0
@@ -18,17 +24,24 @@ services:
       LDAP_ADMIN_PASSWORD: admin
     ports:
       - "389:389"
+    restart: unless-stopped
 
   api:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION: ${SSO_VERSION:-dev}
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
     environment:
       SSO_ENV: local
       SSO_HTTP_ADDR: :8080
       SSO_DATABASE_URL: postgres://sso:sso@postgres:5432/sso?sslmode=disable
-      SSO_JWT_SECRET: change-me-please-change-me-please-change-me
-      SSO_ENCRYPTION_KEY: change-me-please-change-me-please-change-me
+      # Provide real secrets via a .env file or the shell; the defaults are for local dev only.
+      SSO_JWT_SECRET: ${SSO_JWT_SECRET:-change-me-please-change-me-please-change-me}
+      SSO_ENCRYPTION_KEY: ${SSO_ENCRYPTION_KEY:-change-me-please-change-me-please-change-me}
       SSO_ACCESS_TOKEN_TTL: 15m
       SSO_SESSION_TTL: 720h
       SSO_REFRESH_TOKEN_TTL: 720h
@@ -36,6 +49,10 @@ services:
       SSO_ISSUER: http://localhost:8080
       SSO_OIDC_KEY_ROTATION_ENABLED: "false"
       SSO_LOG_LEVEL: info
+      # Apply DB migrations automatically on start (convenient for compose; keep false in prod deploys with a separate migration step).
+      SSO_MIGRATE_ON_START: "true"
+      # Comma-separated CIDRs of reverse proxies allowed to set X-Forwarded-For.
+      SSO_TRUSTED_PROXIES: ${SSO_TRUSTED_PROXIES:-}
     ports:
       - "8080:8080"
 

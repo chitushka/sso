@@ -87,6 +87,9 @@ func RateLimit(limiter RateLimiter, paths ...string) func(http.Handler) http.Han
 		})
 	}
 }
+
+// clientIP reads the peer address. RealIP has already resolved X-Forwarded-For
+// into RemoteAddr and stripped the header, so RemoteAddr is authoritative here.
 func clientIP(r *http.Request) string {
 	if x := r.Header.Get("X-Forwarded-For"); x != "" {
 		return strings.TrimSpace(strings.Split(x, ",")[0])

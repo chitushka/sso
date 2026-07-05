@@ -11,7 +11,8 @@ RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/sso-api ./cmd/api
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.version=${VERSION}" -o /out/sso-api ./cmd/api
 
 FROM alpine:3.20
 RUN adduser -D -H -u 10001 appuser && apk add --no-cache ca-certificates

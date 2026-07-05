@@ -1,0 +1,28 @@
+version: "2"
+
+linters:
+  # standard set: errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - gosec
+    - misspell
+    - unconvert
+  settings:
+    gosec:
+      excludes:
+        - G104 # unhandled errors are errcheck's job; explicit `_ =` is our convention
+        - G124 # sso_session cookie Secure flag is intentionally conditional on TLS (set behind a reverse proxy)
+        - G115 # integer conversions are bounded (argon2 params, TOTP counter)
+        - G505 # crypto/sha1 is mandated by RFC 6238 (TOTP)
+        - G710 # broker redirects are validated (continue must start with "/", error is a fixed set)
+        - G118 # back-channel logout goroutine intentionally outlives the request
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+      # go-ldap's DialURL replacement changes the dial API surface; the deprecated
+      # calls are stable and this is tracked for a dedicated cleanup.
+      - path: internal/ldap/client\.go
+        linters:
+          - staticcheck
+        text: "SA1019"

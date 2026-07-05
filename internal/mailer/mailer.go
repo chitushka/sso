@@ -55,10 +55,10 @@ func (m *SMTPMailer) Send(_ context.Context, to, subject, body string) error {
 	}
 	c, err := smtp.NewClient(conn, m.cfg.Host)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if m.cfg.StartTLS {
 		if err := c.StartTLS(&tls.Config{ServerName: m.cfg.Host, MinVersion: tls.VersionTLS12}); err != nil {
 			return err

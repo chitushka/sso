@@ -11,6 +11,7 @@ import (
 	"github.com/chitushka/sso/internal/bootstrap"
 	"github.com/chitushka/sso/internal/broker"
 	"github.com/chitushka/sso/internal/config"
+	"github.com/chitushka/sso/internal/dbmigrate"
 	"github.com/chitushka/sso/internal/health"
 	"github.com/chitushka/sso/internal/ldap"
 	"github.com/chitushka/sso/internal/mailer"
@@ -30,7 +31,13 @@ type App struct {
 	router http.Handler
 }
 
-func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
+func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version string) (*App, error) {
+	if cfg.Database.MigrateOnStart {
+		if err := dbmigrate.Up(cfg.Database.URL); err != nil {
+			return nil, err
+		}
+		logger.Info("database migrations applied")
+	}
 	pool, err := pgxpool.New(ctx, cfg.Database.URL)
 	if err != nil {
 		return nil, err
@@ -69,13 +76,17 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		oidcSvc.StartRotation(ctx, logger)
 	}
 	oauthSvc.WithIDTokenIssuer(oidcSvc).WithIDTokenVerifier(oidcSvc).WithBackchannel(oidcSvc)
+	metrics := middleware.NewMetrics()
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP(cfg.HTTPSecurity.TrustedProxies))
+	r.Use(metrics.Handler)
 	r.Use(middleware.Recoverer(logger))
 	r.Use(middleware.Logger(logger))
 	r.Use(cors.Handler(cors.Options{AllowedOrigins: cfg.CORS.AllowedOrigins, AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}, AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"}, AllowCredentials: true, MaxAge: 300}))
 	r.Use(middleware.RateLimit(middleware.NewTokenBucketLimiter(30, 10), "/api/v1/auth/login", "/oauth2/token", "/api/v1/bootstrap"))
-	health.RegisterRoutes(r, pool)
+	r.Get("/metrics", metrics.Expose)
+	health.RegisterRoutes(r, pool, version)
 	require := func(resource, action string) func(http.Handler) http.Handler {
 		return rbac.RequirePermission(rbacRepo, resource, action)
 	}

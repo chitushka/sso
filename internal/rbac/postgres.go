@@ -277,7 +277,7 @@ func (r *PostgresRepository) SyncLDAPGroups(ctx context.Context, userID, provide
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `DELETE FROM user_groups WHERE user_id=$1 AND source='ldap'`, userID); err != nil {
 		return err
 	}

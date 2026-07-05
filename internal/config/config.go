@@ -12,15 +12,16 @@ import (
 )
 
 type Config struct {
-	Env      string
-	HTTP     HTTPConfig
-	Database DatabaseConfig
-	Security SecurityConfig
-	Token    TokenConfig
-	CORS     CORSConfig
-	OIDC     OIDCConfig
-	Logging  LoggingConfig
-	SMTP     SMTPConfig
+	Env          string
+	HTTP         HTTPConfig
+	Database     DatabaseConfig
+	Security     SecurityConfig
+	Token        TokenConfig
+	CORS         CORSConfig
+	OIDC         OIDCConfig
+	Logging      LoggingConfig
+	SMTP         SMTPConfig
+	HTTPSecurity HTTPSecurityConfig
 }
 
 type HTTPConfig struct {
@@ -28,7 +29,8 @@ type HTTPConfig struct {
 }
 
 type DatabaseConfig struct {
-	URL string
+	URL            string
+	MigrateOnStart bool
 }
 
 type SecurityConfig struct {
@@ -44,6 +46,10 @@ type TokenConfig struct {
 
 type CORSConfig struct {
 	AllowedOrigins []string
+}
+
+type HTTPSecurityConfig struct {
+	TrustedProxies []string
 }
 
 type OIDCConfig struct {
@@ -96,7 +102,8 @@ func Load() (Config, error) {
 			Address: env("SSO_HTTP_ADDR", ":8080"),
 		},
 		Database: DatabaseConfig{
-			URL: os.Getenv("SSO_DATABASE_URL"),
+			URL:            os.Getenv("SSO_DATABASE_URL"),
+			MigrateOnStart: boolean("SSO_MIGRATE_ON_START", false),
 		},
 		Security: SecurityConfig{
 			JWTSecret:     os.Getenv("SSO_JWT_SECRET"),
@@ -116,6 +123,9 @@ func Load() (Config, error) {
 		},
 		Logging: LoggingConfig{
 			Level: env("SSO_LOG_LEVEL", "info"),
+		},
+		HTTPSecurity: HTTPSecurityConfig{
+			TrustedProxies: split(os.Getenv("SSO_TRUSTED_PROXIES")),
 		},
 		SMTP: SMTPConfig{
 			Host:     os.Getenv("SSO_SMTP_HOST"),

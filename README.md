@@ -1,6 +1,17 @@
-# SSO v0.9 — Federation & Polish
+# SSO v1.0 — Production Readiness
 
 Single-tenant by design: this SSO serves exactly one company. Multi-tenancy (realms) is intentionally out of scope.
+
+## Deployment
+
+The binary serves plain HTTP and must run behind a TLS-terminating reverse proxy (nginx, traefik, Caddy) in production:
+
+- Terminate HTTPS at the proxy and forward to `:8080`. The `sso_session` cookie sets `Secure` only when the request arrived over TLS, so terminate TLS at the proxy and forward the original scheme, or run the proxy on the same host.
+- Set `SSO_TRUSTED_PROXIES` to the proxy's IP/CIDR. Only then is `X-Forwarded-For` honored for the client IP; from any other peer the header is ignored so a client cannot spoof its IP to evade per-IP brute-force lockout and rate limiting. Empty (default) = trust nobody, use the direct peer address.
+- Provide real `SSO_JWT_SECRET` and `SSO_ENCRYPTION_KEY` (each ≥32 chars, e.g. `openssl rand -base64 48`) via a `.env` file or the orchestrator's secret store — never the committed defaults.
+- `docker compose up` applies migrations automatically (`SSO_MIGRATE_ON_START=true`). For staged prod deploys keep it `false` and run migrations as a separate step.
+
+Operational endpoints: `GET /health/live`, `GET /health/ready` (checks the DB), `GET /health/version`, `GET /metrics` (Prometheus text format).
 
 Production-oriented SSO/IdP prototype written in Go.
 
@@ -35,6 +46,8 @@ Release 0.5.1 standardizes all application environment variables under the `SSO_
 | `SSO_ENV` | No | `local` | Runtime environment name. |
 | `SSO_HTTP_ADDR` | No | `:8080` | HTTP listen address. |
 | `SSO_DATABASE_URL` | Yes | `postgres://sso:sso@postgres:5432/sso?sslmode=disable` | PostgreSQL connection string. Use `postgres` as host inside Docker Compose. |
+| `SSO_MIGRATE_ON_START` | No | `false` | Apply embedded DB migrations on startup. |
+| `SSO_TRUSTED_PROXIES` | No | — | Comma-separated CIDRs/IPs of reverse proxies allowed to set `X-Forwarded-For`. Empty = trust none. |
 | `SSO_JWT_SECRET` | Yes | `change-me-please-change-me-please-change-me` | JWT signing secret. Must be at least 32 characters. |
 | `SSO_ENCRYPTION_KEY` | Yes | `change-me-please-change-me-please-change-me` | Key for encrypting stored secrets (LDAP bind passwords) with AES-256-GCM. Must be at least 32 characters. |
 | `SSO_ACCESS_TOKEN_TTL` | No | `15m` | Access token lifetime. |
@@ -253,3 +266,13 @@ Run migration `000009_federation` before starting v0.9.
 - Hourly background cleanup of expired sessions, authorization codes, refresh tokens, one-time tokens and login-attempt counters.
 
 Deferred (no consumer yet): SAML 2.0, SCIM, token exchange.
+
+## Release 1.0 - Production Readiness
+
+- **CI** (`.github/workflows/ci.yml`): gofmt check, `go vet`, unit tests, integration tests against a real Postgres service, golangci-lint, Vue build and Docker image build on every PR and push to main.
+- **Automatic migrations**: migrations are embedded in the binary and applied on start when `SSO_MIGRATE_ON_START=true` (via golang-migrate), removing the "run migrations manually" foot-gun.
+- **Integration tests** (`internal/integration`, build tag `integration`): reset schema → migrate → bootstrap → login → OAuth2 code flow with refresh rotation and reuse detection → RBAC enforcement, end-to-end over HTTP against Postgres.
+- **Linting**: `.golangci.yml` (errcheck, govet, staticcheck, unused, ineffassign, gosec, misspell, unconvert), wired into CI.
+- **Trusted-proxy-aware client IP**: `RealIP` middleware resolves `X-Forwarded-For` only from `SSO_TRUSTED_PROXIES`, closing the brute-force/rate-limit bypass.
+- **Observability**: `/metrics` (Prometheus text format: request counts by route/status, in-flight gauge, duration sum) and `/health/version`.
+- **Ops hardening**: docker-compose gained a Postgres healthcheck with `depends_on: condition`, `restart: unless-stopped`, migrate-on-start, and secrets via env interpolation instead of hardcoded values. Binary version is injected with `-ldflags -X main.version`.

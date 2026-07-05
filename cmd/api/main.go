@@ -14,6 +14,9 @@ import (
 	"github.com/chitushka/sso/internal/config"
 )
 
+// version is injected at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	cfg, err := config.Load()
 	logger := newLogger(cfg.Logging.Level)
@@ -23,7 +26,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	a, err := app.New(ctx, cfg, logger)
+	a, err := app.New(ctx, cfg, logger, version)
 	if err != nil {
 		logger.Error("init app", "error", err)
 		os.Exit(1)

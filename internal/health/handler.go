@@ -7,7 +7,7 @@ import (
 	"net/http"
 )
 
-func RegisterRoutes(r chi.Router, pool *pgxpool.Pool) {
+func RegisterRoutes(r chi.Router, pool *pgxpool.Pool, version string) {
 	r.Get("/health/live", func(w http.ResponseWriter, r *http.Request) { httpx.JSON(w, 200, map[string]string{"status": "ok"}) })
 	r.Get("/health/ready", func(w http.ResponseWriter, r *http.Request) {
 		if err := pool.Ping(r.Context()); err != nil {
@@ -15,5 +15,8 @@ func RegisterRoutes(r chi.Router, pool *pgxpool.Pool) {
 			return
 		}
 		httpx.JSON(w, 200, map[string]string{"status": "ready"})
+	})
+	r.Get("/health/version", func(w http.ResponseWriter, r *http.Request) {
+		httpx.JSON(w, 200, map[string]string{"version": version})
 	})
 }

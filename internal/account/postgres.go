@@ -39,7 +39,7 @@ func (r *PostgresRecoveryCodeRepository) Replace(ctx context.Context, userID uui
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `DELETE FROM mfa_recovery_codes WHERE user_id=$1`, userID); err != nil {
 		return err
 	}

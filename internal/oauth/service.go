@@ -80,11 +80,20 @@ type CreateClientResult struct {
 	ClientSecret string `json:"client_secret,omitempty"`
 }
 
+// nonNil keeps pgx from encoding omitted JSON arrays as NULL into NOT NULL
+// TEXT[] columns.
+func nonNil(xs []string) []string {
+	if xs == nil {
+		return []string{}
+	}
+	return xs
+}
+
 func (s *Service) CreateClient(ctx context.Context, in CreateClientInput) (CreateClientResult, error) {
 	if in.Type == "" {
 		in.Type = ClientConfidential
 	}
-	c, sec, err := s.repo.CreateClient(ctx, Client{ClientID: in.ClientID, Name: in.Name, Type: in.Type, RedirectURIs: in.RedirectURIs, AllowedScopes: in.AllowedScopes, PostLogoutRedirectURIs: in.PostLogoutRedirectURIs, BackchannelLogoutURI: in.BackchannelLogoutURI, SkipConsent: in.SkipConsent, Enabled: in.Enabled})
+	c, sec, err := s.repo.CreateClient(ctx, Client{ClientID: in.ClientID, Name: in.Name, Type: in.Type, RedirectURIs: nonNil(in.RedirectURIs), AllowedScopes: nonNil(in.AllowedScopes), PostLogoutRedirectURIs: nonNil(in.PostLogoutRedirectURIs), BackchannelLogoutURI: in.BackchannelLogoutURI, SkipConsent: in.SkipConsent, Enabled: in.Enabled})
 	return CreateClientResult{Client: c, ClientSecret: sec}, err
 }
 func (s *Service) GetClient(ctx context.Context, id uuid.UUID) (Client, error) {
@@ -103,7 +112,7 @@ type UpdateClientInput struct {
 }
 
 func (s *Service) UpdateClient(ctx context.Context, id uuid.UUID, in UpdateClientInput) (Client, error) {
-	c, err := s.repo.UpdateClient(ctx, Client{ID: id, Name: in.Name, RedirectURIs: in.RedirectURIs, AllowedScopes: in.AllowedScopes, PostLogoutRedirectURIs: in.PostLogoutRedirectURIs, BackchannelLogoutURI: in.BackchannelLogoutURI, SkipConsent: in.SkipConsent, Enabled: in.Enabled})
+	c, err := s.repo.UpdateClient(ctx, Client{ID: id, Name: in.Name, RedirectURIs: nonNil(in.RedirectURIs), AllowedScopes: nonNil(in.AllowedScopes), PostLogoutRedirectURIs: nonNil(in.PostLogoutRedirectURIs), BackchannelLogoutURI: in.BackchannelLogoutURI, SkipConsent: in.SkipConsent, Enabled: in.Enabled})
 	if err == nil {
 		_ = s.audit.Write(ctx, audit.Event{Action: "oauth_client_updated", TargetType: "oauth_client", TargetID: c.ClientID})
 	}

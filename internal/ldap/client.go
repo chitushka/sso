@@ -26,7 +26,7 @@ func (c *Client) dial(p Provider) (*ldap.Conn, error) {
 	}
 	if p.StartTLS {
 		if err := conn.StartTLS(&tls.Config{ServerName: p.Host, MinVersion: tls.VersionTLS12}); err != nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil, err
 		}
 	}
@@ -37,7 +37,7 @@ func (c *Client) TestConnection(ctx context.Context, p Provider) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	return conn.Bind(p.BindDN, p.BindPassword)
 }
 func (c *Client) Authenticate(ctx context.Context, p Provider, username, password string) (Identity, error) {
@@ -45,7 +45,7 @@ func (c *Client) Authenticate(ctx context.Context, p Provider, username, passwor
 	if err != nil {
 		return Identity{}, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := conn.Bind(p.BindDN, p.BindPassword); err != nil {
 		return Identity{}, err
 	}
