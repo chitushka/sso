@@ -78,6 +78,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	oauth.RegisterRoutes(r, oauthSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
 	rbac.RegisterRoutes(r, rbacSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), rbacRepo)
 	audit.RegisterRoutes(r, auditRepo, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
+	registerSPA(r, logger)
 	oidc.RegisterRoutes(r, oidcSvc, userRepo, auth.BearerAuth([]byte(cfg.Security.JWTSecret)))
 	return &App{pool: pool, router: r}, nil
 }

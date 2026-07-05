@@ -74,9 +74,23 @@ Scope:
 
 ## v0.7 — Admin UI
 
+Status: done.
+
 Stack:
-- Vue 3
-- JavaScript
+- Vue 3 + Vite (JavaScript, no TypeScript)
 - Bootstrap 5
-- HTML
-- CSS
+- Pinia, Vue Router, Axios
+
+Scope:
+- SPA in `web/admin/`, served by the Go binary from `web/admin/dist` (SPA fallback routing)
+- pages: sign-in, dashboard, users + role assignment, roles + permission assignment, OAuth clients (one-time secret display), LDAP providers + connection test, audit log with filters
+- OAuth consent page wired to `GET/POST /oauth2/consent`
+- login supports `?continue=` redirect back into `/oauth2/authorize` flows
+- Docker multi-stage build with a Node UI stage
+
+## v0.8 — Accounts & MFA (planned)
+
+- SMTP mailer, password reset, email verification
+- TOTP MFA with recovery codes
+- groups and composite roles, LDAP group-to-role mapping
+- extended user profile (name, attributes)

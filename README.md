@@ -1,4 +1,4 @@
-# SSO v0.6.5 — OIDC Completeness
+# SSO v0.7 — Admin UI
 
 Production-oriented SSO/IdP prototype written in Go.
 
@@ -192,3 +192,13 @@ Run migration `000007_oidc_completeness` before starting v0.6.5.
 - **client_credentials grant**: service-to-service tokens for confidential clients; `sub` is the client's internal id, no refresh or ID token, scope validated against `allowed_scopes`.
 - **UserInfo scope filtering**: `profile` → `preferred_username`, `source`; `email` → `email`. Tokens without a scope claim keep the full response.
 - New client fields: `post_logout_redirect_uris`, `backchannel_logout_uri`, `skip_consent` (create and update APIs). `GET /api/v1/oauth/clients/{id}` added.
+
+## Release 0.7 - Admin UI
+
+Vue 3 + Vite + Bootstrap 5 + Pinia + Vue Router + Axios (JavaScript) SPA in `web/admin/`.
+
+Pages: sign-in, dashboard, users (CRUD + role assignment), roles (CRUD + permission assignment), OAuth clients (CRUD, one-time secret display), LDAP providers (CRUD + connection test), audit log (filters), and the OAuth consent screen (`/consent?client_id=...&scope=...&continue=<authorize URL>`).
+
+- **Production**: `docker compose build` compiles the UI in a Node stage and the Go binary serves it from `web/admin/dist` on the same port (8080). Any unknown GET path falls back to `index.html` (SPA routing). If `web/admin/dist` is absent, the server runs API-only.
+- **Development**: run the API locally, then `cd web/admin && npm install && npm run dev` — Vite serves the UI on :5173 and proxies `/api`, `/oauth2`, `/.well-known` and `/health` to :8080 (cookies flow same-origin, no CORS needed).
+- Auth: the UI logs in via `POST /api/v1/auth/login`, stores the Bearer token and relies on the `sso_session` cookie for the OAuth authorize/consent/logout flows. On 401 it redirects to `/login?continue=...`.

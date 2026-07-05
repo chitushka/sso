@@ -1,3 +1,10 @@
+FROM node:22-alpine AS ui
+WORKDIR /ui
+COPY web/admin/package.json web/admin/package-lock.json* ./
+RUN npm install
+COPY web/admin .
+RUN npm run build
+
 FROM golang:1.25-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git ca-certificates
@@ -11,6 +18,7 @@ RUN adduser -D -H -u 10001 appuser && apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=build /out/sso-api /app/sso-api
 COPY migrations /app/migrations
+COPY --from=ui /ui/dist /app/web/admin/dist
 USER appuser
 EXPOSE 8080
 ENTRYPOINT ["/app/sso-api"]
