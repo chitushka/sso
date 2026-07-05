@@ -20,6 +20,7 @@ type Config struct {
 	CORS     CORSConfig
 	OIDC     OIDCConfig
 	Logging  LoggingConfig
+	SMTP     SMTPConfig
 }
 
 type HTTPConfig struct {
@@ -54,6 +55,15 @@ type LoggingConfig struct {
 	Level string
 }
 
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
+	StartTLS bool
+}
+
 func Load() (Config, error) {
 	_ = godotenv.Load()
 
@@ -67,6 +77,13 @@ func Load() (Config, error) {
 	}
 	boolean := func(key string, defaultValue bool) bool {
 		v, err := parseBoolean(key, defaultValue)
+		if err != nil {
+			parseErrs = append(parseErrs, err)
+		}
+		return v
+	}
+	integer := func(key string, defaultValue int) int {
+		v, err := parseInteger(key, defaultValue)
 		if err != nil {
 			parseErrs = append(parseErrs, err)
 		}
@@ -99,6 +116,14 @@ func Load() (Config, error) {
 		},
 		Logging: LoggingConfig{
 			Level: env("SSO_LOG_LEVEL", "info"),
+		},
+		SMTP: SMTPConfig{
+			Host:     os.Getenv("SSO_SMTP_HOST"),
+			Port:     integer("SSO_SMTP_PORT", 587),
+			Username: os.Getenv("SSO_SMTP_USERNAME"),
+			Password: os.Getenv("SSO_SMTP_PASSWORD"),
+			From:     os.Getenv("SSO_SMTP_FROM"),
+			StartTLS: boolean("SSO_SMTP_STARTTLS", true),
 		},
 	}
 
@@ -174,6 +199,20 @@ func parseDuration(key string, defaultValue time.Duration) (time.Duration, error
 	parsed, err := time.ParseDuration(value)
 	if err != nil {
 		return defaultValue, fmt.Errorf("%s has invalid duration %q: %w", key, value, err)
+	}
+
+	return parsed, nil
+}
+
+func parseInteger(key string, defaultValue int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue, nil
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return defaultValue, fmt.Errorf("%s has invalid integer %q: %w", key, value, err)
 	}
 
 	return parsed, nil

@@ -141,6 +141,173 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 		})
 	})
 
+	r.Route("/api/v1/groups", func(r chi.Router) {
+		r.Use(bearerAuth)
+		r.With(RequirePermission(repo, "groups", "read")).Get("/", func(w http.ResponseWriter, r *http.Request) {
+			out, err := svc.ListGroups(r.Context())
+			if err != nil {
+				httpx.Error(w, http.StatusInternalServerError, "failed to list groups")
+				return
+			}
+			httpx.JSON(w, http.StatusOK, out)
+		})
+		r.With(RequirePermission(repo, "groups", "create")).Post("/", func(w http.ResponseWriter, r *http.Request) {
+			var req CreateGroupInput
+			if err := httpx.Decode(r, &req); err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid json body")
+				return
+			}
+			out, err := svc.CreateGroup(r.Context(), req)
+			if err != nil {
+				if errors.Is(err, storage.ErrConflict) {
+					httpx.Error(w, http.StatusConflict, "group already exists")
+					return
+				}
+				httpx.Error(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			httpx.JSON(w, http.StatusCreated, out)
+		})
+		r.With(RequirePermission(repo, "groups", "update")).Put("/{groupID}", func(w http.ResponseWriter, r *http.Request) {
+			groupID, err := uuid.Parse(chi.URLParam(r, "groupID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid group id")
+				return
+			}
+			var req UpdateGroupInput
+			if err := httpx.Decode(r, &req); err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid json body")
+				return
+			}
+			out, err := svc.UpdateGroup(r.Context(), groupID, req)
+			if err != nil {
+				if errors.Is(err, storage.ErrNotFound) {
+					httpx.Error(w, http.StatusNotFound, "group not found")
+					return
+				}
+				httpx.Error(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			httpx.JSON(w, http.StatusOK, out)
+		})
+		r.With(RequirePermission(repo, "groups", "delete")).Delete("/{groupID}", func(w http.ResponseWriter, r *http.Request) {
+			groupID, err := uuid.Parse(chi.URLParam(r, "groupID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid group id")
+				return
+			}
+			if err := svc.DeleteGroup(r.Context(), groupID); err != nil {
+				if errors.Is(err, storage.ErrNotFound) {
+					httpx.Error(w, http.StatusNotFound, "group not found")
+					return
+				}
+				httpx.Error(w, http.StatusInternalServerError, "failed to delete group")
+				return
+			}
+			httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+		})
+		r.With(RequirePermission(repo, "roles", "read")).Get("/{groupID}/roles", func(w http.ResponseWriter, r *http.Request) {
+			groupID, err := uuid.Parse(chi.URLParam(r, "groupID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid group id")
+				return
+			}
+			out, err := svc.ListGroupRoles(r.Context(), groupID)
+			if err != nil {
+				httpx.Error(w, http.StatusInternalServerError, "failed to list group roles")
+				return
+			}
+			httpx.JSON(w, http.StatusOK, out)
+		})
+		r.With(RequirePermission(repo, "groups", "assign")).Post("/{groupID}/roles", func(w http.ResponseWriter, r *http.Request) {
+			groupID, err := uuid.Parse(chi.URLParam(r, "groupID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid group id")
+				return
+			}
+			var req AssignRoleInput
+			if err := httpx.Decode(r, &req); err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid json body")
+				return
+			}
+			if err := svc.AssignRoleToGroup(r.Context(), groupID, req.RoleID); err != nil {
+				httpx.Error(w, http.StatusInternalServerError, "failed to assign role")
+				return
+			}
+			httpx.JSON(w, http.StatusOK, map[string]string{"status": "assigned"})
+		})
+		r.With(RequirePermission(repo, "groups", "assign")).Delete("/{groupID}/roles/{roleID}", func(w http.ResponseWriter, r *http.Request) {
+			groupID, err := uuid.Parse(chi.URLParam(r, "groupID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid group id")
+				return
+			}
+			roleID, err := uuid.Parse(chi.URLParam(r, "roleID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid role id")
+				return
+			}
+			if err := svc.RemoveRoleFromGroup(r.Context(), groupID, roleID); err != nil {
+				httpx.Error(w, http.StatusInternalServerError, "failed to remove role")
+				return
+			}
+			httpx.JSON(w, http.StatusOK, map[string]string{"status": "removed"})
+		})
+	})
+
+	r.Route("/api/v1/users/{userID}/groups", func(r chi.Router) {
+		r.Use(bearerAuth)
+		r.With(RequirePermission(repo, "groups", "read")).Get("/", func(w http.ResponseWriter, r *http.Request) {
+			userID, err := uuid.Parse(chi.URLParam(r, "userID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid user id")
+				return
+			}
+			out, err := svc.ListUserGroups(r.Context(), userID)
+			if err != nil {
+				httpx.Error(w, http.StatusInternalServerError, "failed to list user groups")
+				return
+			}
+			httpx.JSON(w, http.StatusOK, out)
+		})
+		r.With(RequirePermission(repo, "groups", "assign")).Post("/", func(w http.ResponseWriter, r *http.Request) {
+			userID, err := uuid.Parse(chi.URLParam(r, "userID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid user id")
+				return
+			}
+			var req struct {
+				GroupID uuid.UUID `json:"group_id"`
+			}
+			if err := httpx.Decode(r, &req); err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid json body")
+				return
+			}
+			if err := svc.AssignGroupToUser(r.Context(), userID, req.GroupID); err != nil {
+				httpx.Error(w, http.StatusInternalServerError, "failed to assign group")
+				return
+			}
+			httpx.JSON(w, http.StatusOK, map[string]string{"status": "assigned"})
+		})
+		r.With(RequirePermission(repo, "groups", "assign")).Delete("/{groupID}", func(w http.ResponseWriter, r *http.Request) {
+			userID, err := uuid.Parse(chi.URLParam(r, "userID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid user id")
+				return
+			}
+			groupID, err := uuid.Parse(chi.URLParam(r, "groupID"))
+			if err != nil {
+				httpx.Error(w, http.StatusBadRequest, "invalid group id")
+				return
+			}
+			if err := svc.RemoveGroupFromUser(r.Context(), userID, groupID); err != nil {
+				httpx.Error(w, http.StatusInternalServerError, "failed to remove group")
+				return
+			}
+			httpx.JSON(w, http.StatusOK, map[string]string{"status": "removed"})
+		})
+	})
+
 	r.Route("/api/v1/users/{userID}/roles", func(r chi.Router) {
 		r.Use(bearerAuth)
 		r.With(RequirePermission(repo, "roles", "read")).Get("/", func(w http.ResponseWriter, r *http.Request) {

@@ -22,15 +22,21 @@ func NewService(repo Repository, passwords PasswordHasher, audit audit.Repositor
 }
 
 type CreateUserInput struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Status   Status `json:"status"`
+	Username   string            `json:"username"`
+	Email      string            `json:"email"`
+	Password   string            `json:"password"`
+	Status     Status            `json:"status"`
+	FirstName  string            `json:"first_name"`
+	LastName   string            `json:"last_name"`
+	Attributes map[string]string `json:"attributes"`
 }
 type UpdateUserInput struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Status   Status `json:"status"`
+	Username   string            `json:"username"`
+	Email      string            `json:"email"`
+	Status     Status            `json:"status"`
+	FirstName  string            `json:"first_name"`
+	LastName   string            `json:"last_name"`
+	Attributes map[string]string `json:"attributes"`
 }
 
 func (s *Service) Create(ctx context.Context, in CreateUserInput, ip, ua string) (User, error) {
@@ -44,7 +50,7 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput, ip, ua string)
 	if err != nil {
 		return User{}, err
 	}
-	u, err := s.repo.Create(ctx, User{Username: in.Username, Email: in.Email, PasswordHash: &h, Status: in.Status, Source: SourceLocal})
+	u, err := s.repo.Create(ctx, User{Username: in.Username, Email: in.Email, PasswordHash: &h, Status: in.Status, Source: SourceLocal, FirstName: in.FirstName, LastName: in.LastName, Attributes: in.Attributes})
 	if err != nil {
 		return User{}, err
 	}
@@ -64,7 +70,7 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (User, error) {
 	return s.repo.FindByID(ctx, id)
 }
 func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateUserInput) (User, error) {
-	return s.repo.Update(ctx, User{ID: id, Username: in.Username, Email: in.Email, Status: in.Status})
+	return s.repo.Update(ctx, User{ID: id, Username: in.Username, Email: in.Email, Status: in.Status, FirstName: in.FirstName, LastName: in.LastName, Attributes: in.Attributes})
 }
 
 // Delete is a soft delete: the row is kept for audit/FK integrity, the status

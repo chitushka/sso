@@ -148,6 +148,9 @@ func (f *fakeUsers) FindByUsername(_ context.Context, _ string) (users.User, err
 func (f *fakeUsers) List(_ context.Context, _, _ int) ([]users.User, error)         { return nil, nil }
 func (f *fakeUsers) Update(_ context.Context, u users.User) (users.User, error)     { return u, nil }
 func (f *fakeUsers) SetPasswordHash(_ context.Context, _ uuid.UUID, _ string) error { return nil }
+func (f *fakeUsers) SetEmailVerified(_ context.Context, _ uuid.UUID, _ bool) error  { return nil }
+func (f *fakeUsers) SetMFA(_ context.Context, _ uuid.UUID, _ bool, _ string) error  { return nil }
+func (f *fakeUsers) FindByEmail(_ context.Context, _ string) (users.User, error)    { return f.u, nil }
 func (f *fakeUsers) TouchLastLogin(_ context.Context, _ uuid.UUID) error            { return nil }
 func (f *fakeUsers) Count(_ context.Context) (int64, error)                         { return 1, nil }
 
@@ -162,7 +165,8 @@ func (f *fakeSessions) FindByTokenHash(_ context.Context, hash string) (auth.Ses
 	}
 	return f.s, nil
 }
-func (f *fakeSessions) RevokeByTokenHash(_ context.Context, _ string) error { return nil }
+func (f *fakeSessions) RevokeByTokenHash(_ context.Context, _ string) error  { return nil }
+func (f *fakeSessions) RevokeAllByUser(_ context.Context, _ uuid.UUID) error { return nil }
 
 type fakeTokens struct{}
 

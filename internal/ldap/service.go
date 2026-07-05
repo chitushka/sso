@@ -52,6 +52,23 @@ func (s *Service) Update(ctx context.Context, p Provider) (Provider, error) {
 	}
 	return out, err
 }
+func (s *Service) ListGroupMappings(ctx context.Context, providerID uuid.UUID) ([]GroupMapping, error) {
+	return s.repo.ListGroupMappings(ctx, providerID)
+}
+func (s *Service) CreateGroupMapping(ctx context.Context, m GroupMapping) (GroupMapping, error) {
+	out, err := s.repo.CreateGroupMapping(ctx, m)
+	if err == nil {
+		_ = s.audit.Write(ctx, audit.Event{Action: "ldap_group_mapping_created", TargetType: "ldap_provider", TargetID: m.ProviderID.String()})
+	}
+	return out, err
+}
+func (s *Service) DeleteGroupMapping(ctx context.Context, id uuid.UUID) error {
+	err := s.repo.DeleteGroupMapping(ctx, id)
+	if err == nil {
+		_ = s.audit.Write(ctx, audit.Event{Action: "ldap_group_mapping_deleted", TargetType: "ldap_group_mapping", TargetID: id.String()})
+	}
+	return err
+}
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return err
@@ -60,16 +77,24 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// GroupSyncer maps directory groups seen at login onto SSO groups
+// (implemented by rbac.PostgresRepository).
+type GroupSyncer interface {
+	SyncLDAPGroups(ctx context.Context, userID, providerID uuid.UUID, ldapGroups []string) error
+}
+
 type Authenticator struct {
 	repo   Repository
 	client DirectoryClient
 	users  users.Repository
 	audit  audit.Repository
+	groups GroupSyncer
 }
 
 func NewAuthenticator(repo Repository, client DirectoryClient, users users.Repository, audit audit.Repository) *Authenticator {
 	return &Authenticator{repo: repo, client: client, users: users, audit: audit}
 }
+func (a *Authenticator) WithGroupSync(g GroupSyncer) *Authenticator { a.groups = g; return a }
 func (a *Authenticator) Authenticate(ctx context.Context, username, password string) (users.User, error) {
 	p, err := a.repo.FirstEnabled(ctx)
 	if err != nil {
@@ -83,6 +108,9 @@ func (a *Authenticator) Authenticate(ctx context.Context, username, password str
 	dn := id.DN
 	u, err := a.users.UpsertLDAP(ctx, users.User{Username: id.Username, Email: id.Email, Status: users.StatusActive, Source: users.SourceLDAP, LDAPProviderID: &id.ProviderID, LDAPDN: &dn})
 	if err == nil {
+		if a.groups != nil {
+			_ = a.groups.SyncLDAPGroups(ctx, u.ID, p.ID, id.Groups)
+		}
 		_ = a.audit.Write(ctx, audit.Event{ActorUserID: &u.ID, Action: "ldap_login_success", TargetType: "user", TargetID: u.ID.String()})
 	}
 	return u, err

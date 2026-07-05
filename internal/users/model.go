@@ -19,15 +19,21 @@ const (
 )
 
 type User struct {
-	ID             uuid.UUID  `json:"id"`
-	Username       string     `json:"username"`
-	Email          string     `json:"email"`
-	PasswordHash   *string    `json:"-"`
-	Status         Status     `json:"status"`
-	Source         string     `json:"source"`
-	LDAPProviderID *uuid.UUID `json:"ldap_provider_id,omitempty"`
-	LDAPDN         *string    `json:"ldap_dn,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	LastLoginAt    *time.Time `json:"last_login_at,omitempty"`
+	ID             uuid.UUID         `json:"id"`
+	Username       string            `json:"username"`
+	Email          string            `json:"email"`
+	PasswordHash   *string           `json:"-"`
+	Status         Status            `json:"status"`
+	Source         string            `json:"source"`
+	FirstName      string            `json:"first_name"`
+	LastName       string            `json:"last_name"`
+	Attributes     map[string]string `json:"attributes"`
+	EmailVerified  bool              `json:"email_verified"`
+	MFAEnabled     bool              `json:"mfa_enabled"`
+	MFASecret      string            `json:"-"`
+	LDAPProviderID *uuid.UUID        `json:"ldap_provider_id,omitempty"`
+	LDAPDN         *string           `json:"ldap_dn,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+	LastLoginAt    *time.Time        `json:"last_login_at,omitempty"`
 }

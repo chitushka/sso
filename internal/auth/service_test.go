@@ -26,6 +26,9 @@ func (m *memUsers) FindByUsername(_ context.Context, username string) (users.Use
 func (m *memUsers) List(_ context.Context, _, _ int) ([]users.User, error)         { return nil, nil }
 func (m *memUsers) Update(_ context.Context, u users.User) (users.User, error)     { return u, nil }
 func (m *memUsers) SetPasswordHash(_ context.Context, _ uuid.UUID, _ string) error { return nil }
+func (m *memUsers) SetEmailVerified(_ context.Context, _ uuid.UUID, _ bool) error  { return nil }
+func (m *memUsers) SetMFA(_ context.Context, _ uuid.UUID, _ bool, _ string) error  { return nil }
+func (m *memUsers) FindByEmail(_ context.Context, _ string) (users.User, error)    { return m.u, nil }
 func (m *memUsers) TouchLastLogin(_ context.Context, _ uuid.UUID) error            { return nil }
 func (m *memUsers) Count(_ context.Context) (int64, error)                         { return 1, nil }
 
@@ -35,7 +38,8 @@ func (memSessions) Create(_ context.Context, s Session) (Session, error) { retur
 func (memSessions) FindByTokenHash(_ context.Context, _ string) (Session, error) {
 	return Session{}, storage.ErrNotFound
 }
-func (memSessions) RevokeByTokenHash(_ context.Context, _ string) error { return nil }
+func (memSessions) RevokeByTokenHash(_ context.Context, _ string) error  { return nil }
+func (memSessions) RevokeAllByUser(_ context.Context, _ uuid.UUID) error { return nil }
 
 type memAudit struct{ actions []string }
 
@@ -144,6 +148,52 @@ func TestSuccessfulLoginResetsCounter(t *testing.T) {
 	}
 	if attempts.attempts["alice|1.2.3.4"] != 0 {
 		t.Fatal("counter must be reset after successful login")
+	}
+}
+
+type fakeMFAVerifier struct{ valid string }
+
+func (f fakeMFAVerifier) VerifyCode(_ context.Context, _ users.User, code string) (bool, error) {
+	return code == f.valid, nil
+}
+
+func TestMFALoginFlow(t *testing.T) {
+	hash := "hash:correct-password"
+	u := users.User{ID: uuid.New(), Username: "alice", Status: users.StatusActive, Source: users.SourceLocal, PasswordHash: &hash, MFAEnabled: true}
+	issuer := NewJWTIssuer([]byte("0123456789abcdef0123456789abcdef"), 15*time.Minute)
+	svc := NewService(&memUsers{u: u}, memSessions{}, &memAudit{}, memHasher{}, issuer, time.Hour).
+		WithLockout(newMemAttempts()).
+		WithMFA(fakeMFAVerifier{valid: "123456"}, issuer)
+
+	res, err := svc.Login(context.Background(), LoginInput{Username: "alice", Password: "correct-password", IP: "1.2.3.4"})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if !res.MFARequired || res.MFAToken == "" {
+		t.Fatalf("expected mfa_required, got %+v", res)
+	}
+	if res.SessionToken != "" || res.AccessToken != "" {
+		t.Fatal("no session may be issued before the second factor")
+	}
+	// The pending token must not pass BearerAuth.
+	if claims, err := issuer.Verify(res.MFAToken); err != nil || claims.Purpose != "mfa" {
+		t.Fatalf("mfa token must carry purpose=mfa, got %+v err %v", claims, err)
+	}
+	// Wrong code fails.
+	if _, err := svc.CompleteMFALogin(context.Background(), res.MFAToken, "000000", LoginInput{IP: "1.2.3.4"}); !errors.Is(err, ErrInvalidMFACode) {
+		t.Fatalf("want ErrInvalidMFACode, got %v", err)
+	}
+	// Correct code completes the login.
+	final, err := svc.CompleteMFALogin(context.Background(), res.MFAToken, "123456", LoginInput{IP: "1.2.3.4"})
+	if err != nil {
+		t.Fatalf("complete mfa: %v", err)
+	}
+	if final.AccessToken == "" || final.SessionToken == "" {
+		t.Fatalf("expected full session after second factor, got %+v", final)
+	}
+	// A regular access token must not work as an mfa token.
+	if _, err := svc.CompleteMFALogin(context.Background(), final.AccessToken, "123456", LoginInput{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("access token must not be accepted as mfa token")
 	}
 }
 

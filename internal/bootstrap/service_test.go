@@ -65,6 +65,16 @@ func (f *fakeUsersRepo) Update(ctx context.Context, u users.User) (users.User, e
 func (f *fakeUsersRepo) SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error {
 	return nil
 }
+func (f *fakeUsersRepo) SetEmailVerified(context.Context, uuid.UUID, bool) error { return nil }
+func (f *fakeUsersRepo) SetMFA(context.Context, uuid.UUID, bool, string) error   { return nil }
+func (f *fakeUsersRepo) FindByEmail(ctx context.Context, email string) (users.User, error) {
+	for _, u := range f.items {
+		if u.Email == email {
+			return u, nil
+		}
+	}
+	return users.User{}, storage.ErrNotFound
+}
 func (f *fakeUsersRepo) TouchLastLogin(ctx context.Context, id uuid.UUID) error { return nil }
 func (f *fakeUsersRepo) Count(ctx context.Context) (int64, error)               { return int64(len(f.items)), nil }
 

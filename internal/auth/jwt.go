@@ -18,6 +18,7 @@ type Claims struct {
 	Source   string `json:"source"`
 	ClientID string `json:"client_id,omitempty"`
 	Scope    string `json:"scope,omitempty"`
+	Purpose  string `json:"purpose,omitempty"` // "mfa" for the pending second-factor token
 	jwt.RegisteredClaims
 }
 type JWTIssuer interface {
@@ -34,6 +35,24 @@ func NewJWTIssuer(secret []byte, ttl time.Duration) *HMACJWTIssuer {
 }
 func (i *HMACJWTIssuer) Issue(u users.User) (string, time.Time, error) {
 	return i.IssueOAuthAccessToken(u, "", "")
+}
+
+// IssueMFAToken issues the short-lived token bridging the password step and
+// the TOTP step of a two-factor login. BearerAuth rejects it for API access.
+func (i *HMACJWTIssuer) IssueMFAToken(u users.User) (string, error) {
+	exp := time.Now().Add(5 * time.Minute)
+	claims := Claims{UserID: u.ID.String(), Username: u.Username, Purpose: "mfa", RegisteredClaims: jwt.RegisteredClaims{Subject: u.ID.String(), ExpiresAt: jwt.NewNumericDate(exp), IssuedAt: jwt.NewNumericDate(time.Now())}}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(i.secret)
+}
+func (i *HMACJWTIssuer) VerifyMFAToken(tokenStr string) (string, error) {
+	claims, err := i.Verify(tokenStr)
+	if err != nil {
+		return "", err
+	}
+	if claims.Purpose != "mfa" {
+		return "", errors.New("not an mfa token")
+	}
+	return claims.UserID, nil
 }
 func (i *HMACJWTIssuer) Verify(tokenStr string) (*Claims, error) {
 	claims := &Claims{}
@@ -75,6 +94,11 @@ func BearerAuth(secret []byte) func(http.Handler) http.Handler {
 				return secret, nil
 			})
 			if err != nil || !token.Valid {
+				httpx.Error(w, 401, "invalid token")
+				return
+			}
+			if claims.Purpose != "" {
+				// Special-purpose tokens (e.g. mfa-pending) never grant API access.
 				httpx.Error(w, 401, "invalid token")
 				return
 			}

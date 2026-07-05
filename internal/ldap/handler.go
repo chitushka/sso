@@ -73,6 +73,58 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			httpx.JSON(w, 200, map[string]string{"status": "deleted"})
 		})
+		r.With(require("ldap", "read")).Get("/{id}/group-mappings", func(w http.ResponseWriter, r *http.Request) {
+			id, err := uuid.Parse(chi.URLParam(r, "id"))
+			if err != nil {
+				httpx.Error(w, 400, "invalid id")
+				return
+			}
+			out, err := svc.ListGroupMappings(r.Context(), id)
+			if err != nil {
+				httpx.Error(w, 500, "failed to list group mappings")
+				return
+			}
+			httpx.JSON(w, 200, out)
+		})
+		r.With(require("ldap", "update")).Post("/{id}/group-mappings", func(w http.ResponseWriter, r *http.Request) {
+			id, err := uuid.Parse(chi.URLParam(r, "id"))
+			if err != nil {
+				httpx.Error(w, 400, "invalid id")
+				return
+			}
+			var m GroupMapping
+			if err := httpx.Decode(r, &m); err != nil {
+				httpx.Error(w, 400, "invalid json body")
+				return
+			}
+			m.ProviderID = id
+			out, err := svc.CreateGroupMapping(r.Context(), m)
+			if err != nil {
+				if errors.Is(err, storage.ErrConflict) {
+					httpx.Error(w, 409, "mapping already exists")
+					return
+				}
+				httpx.Error(w, 500, "failed to create mapping")
+				return
+			}
+			httpx.JSON(w, 201, out)
+		})
+		r.With(require("ldap", "update")).Delete("/{id}/group-mappings/{mappingID}", func(w http.ResponseWriter, r *http.Request) {
+			mappingID, err := uuid.Parse(chi.URLParam(r, "mappingID"))
+			if err != nil {
+				httpx.Error(w, 400, "invalid mapping id")
+				return
+			}
+			if err := svc.DeleteGroupMapping(r.Context(), mappingID); err != nil {
+				if errors.Is(err, storage.ErrNotFound) {
+					httpx.Error(w, 404, "mapping not found")
+					return
+				}
+				httpx.Error(w, 500, "failed to delete mapping")
+				return
+			}
+			httpx.JSON(w, 200, map[string]string{"status": "deleted"})
+		})
 		r.With(require("ldap", "test")).Post("/test", func(w http.ResponseWriter, r *http.Request) {
 			var p Provider
 			if err := httpx.Decode(r, &p); err != nil {

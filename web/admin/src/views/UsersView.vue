@@ -4,31 +4,58 @@ import api, { apiError } from '../api'
 
 const users = ref([])
 const roles = ref([])
+const groups = ref([])
 const error = ref('')
 const creating = ref(false)
-const createForm = ref({ username: '', email: '', password: '', status: 'active' })
+const createForm = ref({ username: '', email: '', password: '', status: 'active', first_name: '', last_name: '' })
 const editing = ref(null) // user id being edited
 const editForm = ref({})
 const rolesFor = ref(null) // user id whose roles panel is open
 const userRoles = ref([])
+const groupsFor = ref(null)
+const userGroups = ref([])
 
 async function load() {
   try {
-    const [u, r] = await Promise.all([api.get('/api/v1/users?limit=100'), api.get('/api/v1/roles')])
+    const [u, r, g] = await Promise.all([api.get('/api/v1/users?limit=100'), api.get('/api/v1/roles'), api.get('/api/v1/groups')])
     users.value = u.data
     roles.value = r.data
+    groups.value = g.data
   } catch (e) {
     error.value = apiError(e)
   }
 }
 onMounted(load)
 
+async function openGroups(u) {
+  groupsFor.value = groupsFor.value === u.id ? null : u.id
+  if (groupsFor.value) {
+    const { data } = await api.get(`/api/v1/users/${u.id}/groups`)
+    userGroups.value = (data || []).map((g) => g.id)
+  }
+}
+
+async function toggleGroup(userId, group, assigned) {
+  error.value = ''
+  try {
+    if (assigned) {
+      await api.delete(`/api/v1/users/${userId}/groups/${group.id}`)
+    } else {
+      await api.post(`/api/v1/users/${userId}/groups`, { group_id: group.id })
+    }
+    const { data } = await api.get(`/api/v1/users/${userId}/groups`)
+    userGroups.value = (data || []).map((g) => g.id)
+  } catch (e) {
+    error.value = apiError(e)
+  }
+}
+
 async function createUser() {
   error.value = ''
   try {
     await api.post('/api/v1/users', createForm.value)
     creating.value = false
-    createForm.value = { username: '', email: '', password: '', status: 'active' }
+    createForm.value = { username: '', email: '', password: '', status: 'active', first_name: '', last_name: '' }
     await load()
   } catch (e) {
     error.value = apiError(e)
@@ -37,7 +64,7 @@ async function createUser() {
 
 function startEdit(u) {
   editing.value = u.id
-  editForm.value = { username: u.username, email: u.email, status: u.status }
+  editForm.value = { username: u.username, email: u.email, status: u.status, first_name: u.first_name, last_name: u.last_name, attributes: u.attributes }
 }
 
 async function saveEdit(id) {
@@ -106,6 +133,8 @@ async function toggleRole(userId, role, assigned) {
         </select>
       </div>
       <div class="col-md-1"><button class="btn btn-success w-100">Save</button></div>
+      <div class="col-md-3"><input v-model="createForm.first_name" class="form-control" placeholder="first name" /></div>
+      <div class="col-md-3"><input v-model="createForm.last_name" class="form-control" placeholder="last name" /></div>
     </div>
   </form>
 
@@ -139,6 +168,7 @@ async function toggleRole(userId, role, assigned) {
             <td class="text-muted small">{{ u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '—' }}</td>
             <td class="text-end">
               <button class="btn btn-outline-primary btn-sm me-1" @click="openRoles(u)">Roles</button>
+              <button class="btn btn-outline-primary btn-sm me-1" @click="openGroups(u)">Groups</button>
               <button class="btn btn-outline-secondary btn-sm me-1" @click="startEdit(u)">Edit</button>
               <button class="btn btn-outline-danger btn-sm" @click="removeUser(u)">Delete</button>
             </td>
@@ -156,6 +186,23 @@ async function toggleRole(userId, role, assigned) {
                   @change="toggleRole(u.id, r, userRoles.includes(r.id))"
                 />
                 <label class="form-check-label" :for="u.id + r.id">{{ r.code }}</label>
+              </div>
+            </div>
+          </td>
+        </tr>
+        <tr v-if="groupsFor === u.id">
+          <td colspan="6" class="bg-light">
+            <div class="d-flex flex-wrap gap-3 p-2">
+              <span v-if="!groups.length" class="text-muted small">No groups defined yet.</span>
+              <div v-for="g in groups" :key="g.id" class="form-check">
+                <input
+                  class="form-check-input"
+                  type="checkbox"
+                  :id="u.id + g.id"
+                  :checked="userGroups.includes(g.id)"
+                  @change="toggleGroup(u.id, g, userGroups.includes(g.id))"
+                />
+                <label class="form-check-label" :for="u.id + g.id">{{ g.code }}</label>
               </div>
             </div>
           </td>

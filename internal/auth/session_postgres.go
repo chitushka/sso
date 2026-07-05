@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/chitushka/sso/internal/storage"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -28,5 +29,9 @@ func (r *PostgresSessionRepository) FindByTokenHash(ctx context.Context, hash st
 }
 func (r *PostgresSessionRepository) RevokeByTokenHash(ctx context.Context, hash string) error {
 	_, err := r.pool.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE token_hash=$1`, hash)
+	return err
+}
+func (r *PostgresSessionRepository) RevokeAllByUser(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.pool.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, userID)
 	return err
 }

@@ -23,6 +23,7 @@ type SessionRepository interface {
 	Create(ctx context.Context, s Session) (Session, error)
 	FindByTokenHash(ctx context.Context, hash string) (Session, error)
 	RevokeByTokenHash(ctx context.Context, hash string) error
+	RevokeAllByUser(ctx context.Context, userID uuid.UUID) error
 }
 
 func NewSessionToken() (raw, hash string, err error) {

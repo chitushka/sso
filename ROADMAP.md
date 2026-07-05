@@ -88,9 +88,22 @@ Scope:
 - login supports `?continue=` redirect back into `/oauth2/authorize` flows
 - Docker multi-stage build with a Node UI stage
 
-## v0.8 — Accounts & MFA (planned)
+## v0.8 — Accounts & MFA
 
-- SMTP mailer, password reset, email verification
-- TOTP MFA with recovery codes
-- groups and composite roles, LDAP group-to-role mapping
-- extended user profile (name, attributes)
+Status: done.
+
+Scope:
+- SMTP mailer (`SSO_SMTP_*`) with log fallback for development
+- password reset (hashed one-time tokens, session + refresh token revocation)
+- email verification (activates pending accounts)
+- TOTP MFA (RFC 6238, AES-GCM-encrypted secrets, recovery codes, two-step login with a dedicated mfa_token)
+- groups: group→roles, user→groups, permission checks through group membership
+- LDAP group mapping: `group_attribute` read at login, `ldap_group_mappings` synced per provider
+- extended user profile: first/last name, JSONB attributes, email_verified, mfa_enabled
+- UI: forgot/reset password, email verification, account page (MFA + QR), groups admin, mapping editor
+
+## v0.9 — Keycloak parity (planned)
+
+- identity brokering (external OIDC providers: Google, GitHub)
+- multi-tenancy (realms) — decide if needed
+- SAML 2.0 / SCIM / token exchange on demand

@@ -13,6 +13,9 @@ type Repository interface {
 	List(ctx context.Context, limit, offset int) ([]User, error)
 	Update(ctx context.Context, u User) (User, error)
 	SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error
+	SetEmailVerified(ctx context.Context, id uuid.UUID, verified bool) error
+	SetMFA(ctx context.Context, id uuid.UUID, enabled bool, secret string) error
+	FindByEmail(ctx context.Context, email string) (User, error)
 	TouchLastLogin(ctx context.Context, id uuid.UUID) error
 	Count(ctx context.Context) (int64, error)
 }

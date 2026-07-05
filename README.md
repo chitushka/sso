@@ -1,4 +1,4 @@
-# SSO v0.7 — Admin UI
+# SSO v0.8 — Accounts & MFA
 
 Production-oriented SSO/IdP prototype written in Go.
 
@@ -42,6 +42,11 @@ Release 0.5.1 standardizes all application environment variables under the `SSO_
 | `SSO_ISSUER` | No | `http://localhost:8080` | OAuth2/OIDC issuer URL. |
 | `SSO_OIDC_KEY_ROTATION_ENABLED` | No | `false` | Enables background OIDC signing key rotation (new key every 30 days; the previous key stays in JWKS for 24h). |
 | `SSO_LOG_LEVEL` | No | `info` | JSON logger level: `debug`, `info`, `warn`, `error`. |
+| `SSO_SMTP_HOST` | No | `smtp.example.org` | SMTP server. When empty, reset/verification mails are written to the application log (dev mode). |
+| `SSO_SMTP_PORT` | No | `587` | SMTP port. |
+| `SSO_SMTP_USERNAME` / `SSO_SMTP_PASSWORD` | No | — | SMTP credentials (plain auth). |
+| `SSO_SMTP_FROM` | No | `sso@example.org` | Sender address; required to enable SMTP. |
+| `SSO_SMTP_STARTTLS` | No | `true` | Upgrade the SMTP connection with STARTTLS. |
 
 Deprecated variable names such as `DATABASE_URL`, `SSO_DB_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, and `SESSION_TTL` are intentionally not supported by v0.5.1.
 
@@ -202,3 +207,28 @@ Pages: sign-in, dashboard, users (CRUD + role assignment), roles (CRUD + permiss
 - **Production**: `docker compose build` compiles the UI in a Node stage and the Go binary serves it from `web/admin/dist` on the same port (8080). Any unknown GET path falls back to `index.html` (SPA routing). If `web/admin/dist` is absent, the server runs API-only.
 - **Development**: run the API locally, then `cd web/admin && npm install && npm run dev` — Vite serves the UI on :5173 and proxies `/api`, `/oauth2`, `/.well-known` and `/health` to :8080 (cookies flow same-origin, no CORS needed).
 - Auth: the UI logs in via `POST /api/v1/auth/login`, stores the Bearer token and relies on the `sso_session` cookie for the OAuth authorize/consent/logout flows. On 401 it redirects to `/login?continue=...`.
+
+## Release 0.8 - Accounts & MFA
+
+Run migration `000008_accounts_mfa` before starting v0.8.
+
+**Password reset & email verification**
+- `POST /api/v1/auth/password/forgot` (`{login}`) — always returns 200 (no user enumeration); mails a one-hour reset link. Without SMTP the mail (with the link) goes to the server log.
+- `POST /api/v1/auth/password/reset` (`{token, password}`) — sets the password, revokes all sessions and refresh tokens of the user.
+- `POST /api/v1/auth/email/request` (Bearer) / `POST /api/v1/auth/email/verify` (`{token}`) — 24-hour links; verifying activates `pending` accounts.
+- One-time tokens are stored hashed in `one_time_tokens`.
+
+**TOTP MFA (RFC 6238, no external deps)**
+- `POST /api/v1/auth/mfa/enroll` (Bearer) → secret + `otpauth://` URL (QR is rendered in the UI); the secret is stored AES-256-GCM-encrypted.
+- `POST /api/v1/auth/mfa/activate` (`{code}`) → enables MFA and returns 8 single-use recovery codes (stored hashed, shown once).
+- Login becomes two-step: `POST /api/v1/auth/login` returns `{mfa_required, mfa_token}` (5-minute token that cannot be used as a Bearer token), then `POST /api/v1/auth/mfa/verify` (`{mfa_token, code}`) completes the session. Recovery codes are accepted in place of TOTP codes; wrong codes count toward the brute-force lockout.
+- `POST /api/v1/auth/mfa/disable` (`{code}`).
+
+**Groups**
+- `GET/POST /api/v1/groups`, `PUT/DELETE /api/v1/groups/{id}`, `GET/POST/DELETE /api/v1/groups/{id}/roles[/{roleID}]`, `GET/POST/DELETE /api/v1/users/{id}/groups[/{groupID}]` — permissions `groups:*`.
+- Permission checks now include roles inherited through groups.
+- LDAP: the provider's `group_attribute` (default `memberOf`) is read at login and mapped onto SSO groups via `GET/POST/DELETE /api/v1/ldap/providers/{id}/group-mappings`; ldap-sourced memberships are re-synced on every login, manual ones are kept.
+
+**Profile** — users gained `first_name`, `last_name`, `attributes` (JSONB), `email_verified`, `mfa_enabled`.
+
+**UI** — new pages: forgot/reset password, email verification, `/account` (profile, email verification, MFA enrollment with QR code and recovery codes), Groups admin, LDAP group-mapping editor; login form got the second-factor step.

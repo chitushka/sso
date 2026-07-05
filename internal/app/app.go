@@ -5,12 +5,14 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/chitushka/sso/internal/account"
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/bootstrap"
 	"github.com/chitushka/sso/internal/config"
 	"github.com/chitushka/sso/internal/health"
 	"github.com/chitushka/sso/internal/ldap"
+	"github.com/chitushka/sso/internal/mailer"
 	"github.com/chitushka/sso/internal/middleware"
 	"github.com/chitushka/sso/internal/oauth"
 	"github.com/chitushka/sso/internal/oidc"
@@ -40,20 +42,25 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	sessionRepo := auth.NewPostgresSessionRepository(pool)
 	auditRepo := audit.NewPostgresRepository(pool)
 	rbacRepo := rbac.NewPostgresRepository(pool)
-	rbacSvc := rbac.NewService(rbacRepo, auditRepo)
+	rbacSvc := rbac.NewService(rbacRepo, auditRepo).WithGroups(rbacRepo)
 	passwords := auth.NewArgon2idHasher()
 	tokens := auth.NewJWTIssuer([]byte(cfg.Security.JWTSecret), cfg.Token.AccessTTL)
 	encryptor := secrets.NewAESGCM(cfg.Security.EncryptionKey)
 	ldapRepo := ldap.NewPostgresRepository(pool, encryptor)
 	ldapClient := ldap.NewClient()
 	ldapSvc := ldap.NewService(ldapRepo, ldapClient, auditRepo)
-	ldapAuth := ldap.NewAuthenticator(ldapRepo, ldapClient, userRepo, auditRepo)
+	ldapAuth := ldap.NewAuthenticator(ldapRepo, ldapClient, userRepo, auditRepo).WithGroupSync(rbacRepo)
 	loginAttempts := auth.NewPostgresLoginAttemptRepository(pool)
-	authSvc := auth.NewService(userRepo, sessionRepo, auditRepo, passwords, tokens, cfg.Token.SessionTTL).WithLDAP(ldapAuth).WithLockout(loginAttempts)
+	mail := mailer.New(mailer.Config{Host: cfg.SMTP.Host, Port: cfg.SMTP.Port, Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, From: cfg.SMTP.From, StartTLS: cfg.SMTP.StartTLS}, logger)
+	tokenRepo := account.NewPostgresTokenRepository(pool)
+	recoveryRepo := account.NewPostgresRecoveryCodeRepository(pool)
+	accountSvc := account.NewService(userRepo, tokenRepo, recoveryRepo, sessionRepo, passwords, encryptor, mail, auditRepo, cfg.OIDC.Issuer)
+	authSvc := auth.NewService(userRepo, sessionRepo, auditRepo, passwords, tokens, cfg.Token.SessionTTL).WithLDAP(ldapAuth).WithLockout(loginAttempts).WithMFA(accountSvc, tokens)
 	userSvc := users.NewService(userRepo, passwords, auditRepo)
 	bootstrapSvc := bootstrap.NewService(userRepo, passwords, rbacRepo, auditRepo)
 	oauthRepo := oauth.NewPostgresRepository(pool, passwords)
 	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, tokens, auditRepo, passwords).WithTokenVerifier(tokens).WithRefreshTTL(cfg.Token.RefreshTTL)
+	accountSvc.WithRefreshRevoker(oauthRepo)
 	oidcKeys := oidc.NewPostgresKeyStore(pool)
 	oidcSvc := oidc.NewService(cfg.OIDC.Issuer, oidcKeys)
 	_ = oidcSvc.EnsureActiveKey(ctx)
@@ -78,6 +85,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	oauth.RegisterRoutes(r, oauthSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
 	rbac.RegisterRoutes(r, rbacSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), rbacRepo)
 	audit.RegisterRoutes(r, auditRepo, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
+	account.RegisterRoutes(r, accountSvc, authSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)))
 	registerSPA(r, logger)
 	oidc.RegisterRoutes(r, oidcSvc, userRepo, auth.BearerAuth([]byte(cfg.Security.JWTSecret)))
 	return &App{pool: pool, router: r}, nil

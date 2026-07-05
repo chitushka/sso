@@ -12,4 +12,7 @@ type Repository interface {
 	FirstEnabled(ctx context.Context) (Provider, error)
 	Update(ctx context.Context, p Provider) (Provider, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+	ListGroupMappings(ctx context.Context, providerID uuid.UUID) ([]GroupMapping, error)
+	CreateGroupMapping(ctx context.Context, m GroupMapping) (GroupMapping, error)
+	DeleteGroupMapping(ctx context.Context, id uuid.UUID) error
 }

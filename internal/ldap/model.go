@@ -19,6 +19,7 @@ type Provider struct {
 	UsernameAttribute    string    `json:"username_attribute"`
 	EmailAttribute       string    `json:"email_attribute"`
 	DisplayNameAttribute string    `json:"display_name_attribute"`
+	GroupAttribute       string    `json:"group_attribute"`
 	Enabled              bool      `json:"enabled"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
@@ -28,4 +29,12 @@ type Identity struct {
 	Email      string
 	DN         string
 	ProviderID uuid.UUID
+	Groups     []string
+}
+type GroupMapping struct {
+	ID         uuid.UUID `json:"id"`
+	ProviderID uuid.UUID `json:"provider_id"`
+	LDAPGroup  string    `json:"ldap_group"`
+	GroupID    uuid.UUID `json:"group_id"`
+	CreatedAt  time.Time `json:"created_at"`
 }

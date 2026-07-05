@@ -51,6 +51,9 @@ func (c *Client) Authenticate(ctx context.Context, p Provider, username, passwor
 	}
 	filter := strings.ReplaceAll(p.UserFilter, "{username}", ldap.EscapeFilter(username))
 	attrs := []string{p.UsernameAttribute, p.EmailAttribute, "dn"}
+	if p.GroupAttribute != "" {
+		attrs = append(attrs, p.GroupAttribute)
+	}
 	req := ldap.NewSearchRequest(p.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 1, 0, false, filter, attrs, nil)
 	res, err := conn.Search(req)
 	if err != nil {
@@ -68,5 +71,9 @@ func (c *Client) Authenticate(ctx context.Context, p Provider, username, passwor
 	if uname == "" {
 		uname = username
 	}
-	return Identity{Username: uname, Email: email, DN: e.DN, ProviderID: p.ID}, nil
+	var groups []string
+	if p.GroupAttribute != "" {
+		groups = e.GetAttributeValues(p.GroupAttribute)
+	}
+	return Identity{Username: uname, Email: email, DN: e.DN, ProviderID: p.ID, Groups: groups}, nil
 }

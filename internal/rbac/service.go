@@ -10,8 +10,9 @@ import (
 )
 
 type Service struct {
-	repo  Repository
-	audit audit.Repository
+	repo   Repository
+	audit  audit.Repository
+	groups GroupRepository
 }
 
 func NewService(repo Repository, audit audit.Repository) *Service {
