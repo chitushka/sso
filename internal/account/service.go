@@ -99,6 +99,34 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword, ip, 
 	return nil
 }
 
+// ChangePassword is the self-service flow: requires the current password,
+// keeps the current session but revokes the others.
+func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword, newPassword string) error {
+	if len(newPassword) < 8 {
+		return errors.New("password must contain at least 8 characters")
+	}
+	u, err := s.users.FindByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if u.Source != users.SourceLocal || u.PasswordHash == nil {
+		return errors.New("password is managed externally for this account")
+	}
+	ok, err := s.passwords.Verify(oldPassword, *u.PasswordHash)
+	if err != nil || !ok {
+		return errors.New("current password is incorrect")
+	}
+	hash, err := s.passwords.Hash(newPassword)
+	if err != nil {
+		return err
+	}
+	if err := s.users.SetPasswordHash(ctx, userID, hash); err != nil {
+		return err
+	}
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "password_changed", TargetType: "user", TargetID: userID.String()})
+	return nil
+}
+
 func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID) error {
 	u, err := s.users.FindByID(ctx, userID)
 	if err != nil {

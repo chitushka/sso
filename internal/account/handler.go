@@ -25,6 +25,25 @@ func RegisterRoutes(r chi.Router, svc *Service, authSvc *auth.Service, bearerAut
 			// Always 200: whether the account exists must not be observable.
 			httpx.JSON(w, 200, map[string]string{"status": "ok"})
 		})
+		r.With(bearerAuth).Post("/change", func(w http.ResponseWriter, req *http.Request) {
+			userID, ok := currentUser(w, req)
+			if !ok {
+				return
+			}
+			var body struct {
+				OldPassword string `json:"old_password"`
+				NewPassword string `json:"new_password"`
+			}
+			if err := httpx.Decode(req, &body); err != nil {
+				httpx.Error(w, 400, "invalid json body")
+				return
+			}
+			if err := svc.ChangePassword(req.Context(), userID, body.OldPassword, body.NewPassword); err != nil {
+				httpx.Error(w, 400, err.Error())
+				return
+			}
+			httpx.JSON(w, 200, map[string]string{"status": "password_changed"})
+		})
 		r.Post("/reset", func(w http.ResponseWriter, req *http.Request) {
 			var body struct {
 				Token    string `json:"token"`

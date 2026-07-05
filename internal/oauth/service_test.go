@@ -60,6 +60,17 @@ func (r *fakeRepo) UpdateClient(_ context.Context, c Client) (Client, error) {
 	}
 	return Client{}, storage.ErrNotFound
 }
+func (r *fakeRepo) RotateClientSecret(_ context.Context, id uuid.UUID) (Client, string, error) {
+	for key, c := range r.clients {
+		if c.ID == id && c.Type == ClientConfidential {
+			h := "hash:rotated-secret"
+			c.ClientSecretHash = &h
+			r.clients[key] = c
+			return c, "rotated-secret", nil
+		}
+	}
+	return Client{}, "", storage.ErrNotFound
+}
 func (r *fakeRepo) DeleteClient(_ context.Context, id uuid.UUID) error {
 	for key, c := range r.clients {
 		if c.ID == id {

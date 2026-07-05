@@ -109,6 +109,14 @@ func (s *Service) UpdateClient(ctx context.Context, id uuid.UUID, in UpdateClien
 	}
 	return c, err
 }
+func (s *Service) RotateClientSecret(ctx context.Context, id uuid.UUID) (CreateClientResult, error) {
+	c, raw, err := s.repo.RotateClientSecret(ctx, id)
+	if err != nil {
+		return CreateClientResult{}, err
+	}
+	_ = s.audit.Write(ctx, audit.Event{Action: "oauth_client_secret_rotated", TargetType: "oauth_client", TargetID: c.ClientID})
+	return CreateClientResult{Client: c, ClientSecret: raw}, nil
+}
 func (s *Service) DeleteClient(ctx context.Context, id uuid.UUID) error {
 	err := s.repo.DeleteClient(ctx, id)
 	if err == nil {

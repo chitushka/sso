@@ -169,6 +169,16 @@ func (s *Service) CompleteMFALogin(ctx context.Context, mfaToken, code string, i
 	return s.establishSession(ctx, u, in)
 }
 
+// EstablishFederatedSession creates a session for a user authenticated by an
+// external identity provider. Local MFA is deliberately skipped: the second
+// factor is the external IdP's responsibility.
+func (s *Service) EstablishFederatedSession(ctx context.Context, u users.User, in LoginInput) (LoginResult, error) {
+	if u.Status != users.StatusActive {
+		return LoginResult{}, ErrUserBlocked
+	}
+	return s.establishSession(ctx, u, in)
+}
+
 func (s *Service) establishSession(ctx context.Context, u users.User, in LoginInput) (LoginResult, error) {
 	access, accessExp, err := s.tokens.Issue(u)
 	if err != nil {

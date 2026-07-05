@@ -102,8 +102,17 @@ Scope:
 - extended user profile: first/last name, JSONB attributes, email_verified, mfa_enabled
 - UI: forgot/reset password, email verification, account page (MFA + QR), groups admin, mapping editor
 
-## v0.9 — Keycloak parity (planned)
+## v0.9 — Federation & polish
 
-- identity brokering (external OIDC providers: Google, GitHub)
-- multi-tenancy (realms) — decide if needed
-- SAML 2.0 / SCIM / token exchange on demand
+Status: done.
+
+Scope:
+- identity brokering: sign-in through external OIDC/OAuth2 providers (Google, GitHub, generic), account linking by email, JIT provisioning
+- self-service password change (`/api/v1/auth/password/change`)
+- own sessions list and revocation ("sign out everywhere")
+- OAuth client secret rotation
+- background cleanup of expired sessions, codes and tokens
+
+**Design decision (final): single-tenant.** Multi-tenancy (realms) will NOT be implemented — this SSO serves exactly one company. All users, clients, roles and keys live in one global space. Do not add realm/tenant columns or APIs.
+
+Deferred until a concrete consumer appears: SAML 2.0, SCIM, token exchange (RFC 8693).

@@ -11,13 +11,22 @@ import (
 )
 
 type Session struct {
-	ID        uuid.UUID
-	UserID    uuid.UUID
-	TokenHash string
-	IP        string
-	UserAgent string
-	ExpiresAt time.Time
-	RevokedAt *time.Time
+	ID        uuid.UUID  `json:"id"`
+	UserID    uuid.UUID  `json:"user_id"`
+	TokenHash string     `json:"-"`
+	IP        string     `json:"ip"`
+	UserAgent string     `json:"user_agent"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// SessionBrowser powers the self-service "my sessions" API; separate from
+// SessionRepository so existing fakes keep compiling.
+type SessionBrowser interface {
+	ListByUser(ctx context.Context, userID uuid.UUID) ([]Session, error)
+	RevokeByID(ctx context.Context, userID, sessionID uuid.UUID) error
+	RevokeAllByUser(ctx context.Context, userID uuid.UUID) error
 }
 type SessionRepository interface {
 	Create(ctx context.Context, s Session) (Session, error)

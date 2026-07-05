@@ -12,6 +12,7 @@ type Repository interface {
 	FindClientByClientID(ctx context.Context, clientID string) (Client, error)
 	FindClientByID(ctx context.Context, id uuid.UUID) (Client, error)
 	UpdateClient(ctx context.Context, c Client) (Client, error)
+	RotateClientSecret(ctx context.Context, id uuid.UUID) (Client, string, error)
 	DeleteClient(ctx context.Context, id uuid.UUID) error
 	CreateCode(ctx context.Context, c AuthorizationCode) (AuthorizationCode, error)
 	ConsumeCode(ctx context.Context, hash string) (AuthorizationCode, error)

@@ -9,6 +9,7 @@ import (
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/bootstrap"
+	"github.com/chitushka/sso/internal/broker"
 	"github.com/chitushka/sso/internal/config"
 	"github.com/chitushka/sso/internal/health"
 	"github.com/chitushka/sso/internal/ldap"
@@ -79,13 +80,17 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		return rbac.RequirePermission(rbacRepo, resource, action)
 	}
 	bootstrap.RegisterRoutes(r, bootstrapSvc)
-	auth.RegisterRoutes(r, authSvc, userRepo, []byte(cfg.Security.JWTSecret))
+	auth.RegisterRoutes(r, authSvc, userRepo, sessionRepo, []byte(cfg.Security.JWTSecret))
 	users.RegisterRoutes(r, userSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
 	ldap.RegisterRoutes(r, ldapSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
 	oauth.RegisterRoutes(r, oauthSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
 	rbac.RegisterRoutes(r, rbacSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), rbacRepo)
 	audit.RegisterRoutes(r, auditRepo, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
 	account.RegisterRoutes(r, accountSvc, authSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)))
+	brokerRepo := broker.NewPostgresRepository(pool, encryptor)
+	brokerSvc := broker.NewService(brokerRepo, userRepo, authSvc, auditRepo, cfg.OIDC.Issuer, []byte(cfg.Security.JWTSecret))
+	broker.RegisterRoutes(r, brokerSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
+	startCleanup(ctx, pool, logger)
 	registerSPA(r, logger)
 	oidc.RegisterRoutes(r, oidcSvc, userRepo, auth.BearerAuth([]byte(cfg.Security.JWTSecret)))
 	return &App{pool: pool, router: r}, nil

@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import api, { apiError } from '../api'
@@ -14,6 +14,23 @@ const error = ref('')
 const busy = ref(false)
 const mfaToken = ref('') // non-empty → second factor step
 const code = ref('')
+const providers = ref([])
+
+if (route.query.broker_error) {
+  error.value = 'External sign-in failed, try again or use your password'
+}
+onMounted(async () => {
+  try {
+    const { data } = await api.get('/api/v1/broker/providers')
+    providers.value = data
+  } catch {
+    /* password-only login still works */
+  }
+})
+
+function brokerURL(p) {
+  return `/oauth2/broker/${p.code}/login?continue=${encodeURIComponent(String(route.query.continue || '/'))}`
+}
 
 function finish(data) {
   auth.accessToken = data.access_token
@@ -90,6 +107,12 @@ async function submitCode() {
             <div class="text-center mt-3">
               <router-link to="/forgot-password" class="small">Forgot password?</router-link>
             </div>
+            <template v-if="providers.length">
+              <hr />
+              <a v-for="p in providers" :key="p.code" class="btn btn-outline-secondary w-100 mb-2" :href="brokerURL(p)">
+                Continue with {{ p.name }}
+              </a>
+            </template>
           </form>
 
           <form v-else @submit.prevent="submitCode">

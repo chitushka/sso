@@ -14,8 +14,9 @@ const (
 	StatusDeleted Status = "deleted"
 )
 const (
-	SourceLocal = "local"
-	SourceLDAP  = "ldap"
+	SourceLocal     = "local"
+	SourceLDAP      = "ldap"
+	SourceFederated = "federated"
 )
 
 type User struct {

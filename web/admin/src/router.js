@@ -10,6 +10,7 @@ import LdapView from './views/LdapView.vue'
 import AuditView from './views/AuditView.vue'
 import ConsentView from './views/ConsentView.vue'
 import AccountView from './views/AccountView.vue'
+import IdentityProvidersView from './views/IdentityProvidersView.vue'
 import ForgotPasswordView from './views/ForgotPasswordView.vue'
 import ResetPasswordView from './views/ResetPasswordView.vue'
 import VerifyEmailView from './views/VerifyEmailView.vue'
@@ -28,6 +29,7 @@ const router = createRouter({
     { path: '/groups', component: GroupsView },
     { path: '/clients', component: ClientsView },
     { path: '/ldap', component: LdapView },
+    { path: '/identity-providers', component: IdentityProvidersView },
     { path: '/audit', component: AuditView },
     { path: '/account', component: AccountView }
   ]

@@ -120,6 +120,23 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			httpx.JSON(w, 200, out)
 		})
+		r.With(require("oauth_clients", "update")).Post("/{id}/rotate-secret", func(w http.ResponseWriter, r *http.Request) {
+			id, err := uuid.Parse(chi.URLParam(r, "id"))
+			if err != nil {
+				httpx.Error(w, 400, "invalid id")
+				return
+			}
+			out, err := svc.RotateClientSecret(r.Context(), id)
+			if err != nil {
+				if errors.Is(err, storage.ErrNotFound) {
+					httpx.Error(w, 404, "confidential client not found")
+					return
+				}
+				httpx.Error(w, 500, "failed to rotate secret")
+				return
+			}
+			httpx.JSON(w, 200, out)
+		})
 		r.With(require("oauth_clients", "delete")).Delete("/{id}", func(w http.ResponseWriter, r *http.Request) {
 			id, err := uuid.Parse(chi.URLParam(r, "id"))
 			if err != nil {

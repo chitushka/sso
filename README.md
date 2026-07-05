@@ -1,4 +1,6 @@
-# SSO v0.8 — Accounts & MFA
+# SSO v0.9 — Federation & Polish
+
+Single-tenant by design: this SSO serves exactly one company. Multi-tenancy (realms) is intentionally out of scope.
 
 Production-oriented SSO/IdP prototype written in Go.
 
@@ -232,3 +234,22 @@ Run migration `000008_accounts_mfa` before starting v0.8.
 **Profile** — users gained `first_name`, `last_name`, `attributes` (JSONB), `email_verified`, `mfa_enabled`.
 
 **UI** — new pages: forgot/reset password, email verification, `/account` (profile, email verification, MFA enrollment with QR code and recovery codes), Groups admin, LDAP group-mapping editor; login form got the second-factor step.
+
+## Release 0.9 - Federation & Polish
+
+Run migration `000009_federation` before starting v0.9.
+
+**Identity brokering** — sign-in through external providers:
+- Admin API `GET/POST/PUT/DELETE /api/v1/identity-providers` (permissions `identity_providers:*`). Types `google` and `github` auto-fill the endpoint URLs; `oidc` accepts any provider (authorize/token/userinfo URLs). Client secrets are stored AES-256-GCM-encrypted and never returned by the API.
+- Flow: `GET /oauth2/broker/{code}/login?continue=...` → external consent → `GET /oauth2/broker/{code}/callback`. The round-trip `state` is HMAC-signed with a 10-minute TTL (CSRF protection).
+- Account resolution: existing federated link → sign-in; otherwise link by email match; otherwise JIT-provision a user (`source: federated`). Local MFA is skipped for brokered logins — the second factor is the external IdP's job.
+- Register the callback `{issuer}/oauth2/broker/{code}/callback` at the provider. The login page shows a "Continue with …" button per enabled provider.
+- Audit: `broker_login_success/failed`, `identity_linked`, `identity_provider_*`.
+
+**Self-service & operations**
+- `POST /api/v1/auth/password/change` (Bearer; `{old_password, new_password}`) — local accounts only.
+- `GET /api/v1/auth/sessions`, `DELETE /api/v1/auth/sessions/{id}`, `DELETE /api/v1/auth/sessions` ("sign out everywhere") — own sessions.
+- `POST /api/v1/oauth/clients/{id}/rotate-secret` (`oauth_clients:update`) — returns the new secret once.
+- Hourly background cleanup of expired sessions, authorization codes, refresh tokens, one-time tokens and login-attempt counters.
+
+Deferred (no consumer yet): SAML 2.0, SCIM, token exchange.

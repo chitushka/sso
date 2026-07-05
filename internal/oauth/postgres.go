@@ -83,6 +83,18 @@ func (r *PostgresRepository) UpdateClient(ctx context.Context, c Client) (Client
 func (r *PostgresRepository) FindClientByID(ctx context.Context, id uuid.UUID) (Client, error) {
 	return scanClient(r.pool.QueryRow(ctx, `SELECT `+clientCols+` FROM oauth_clients WHERE id=$1`, id))
 }
+func (r *PostgresRepository) RotateClientSecret(ctx context.Context, id uuid.UUID) (Client, string, error) {
+	raw, err := secret()
+	if err != nil {
+		return Client{}, "", err
+	}
+	hash, err := r.hasher.Hash(raw)
+	if err != nil {
+		return Client{}, "", err
+	}
+	c, err := scanClient(r.pool.QueryRow(ctx, `UPDATE oauth_clients SET client_secret_hash=$2,updated_at=now() WHERE id=$1 AND type='confidential' RETURNING `+clientCols, id, hash))
+	return c, raw, err
+}
 func (r *PostgresRepository) DeleteClient(ctx context.Context, id uuid.UUID) error {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM oauth_clients WHERE id=$1`, id)
 	if err == nil && tag.RowsAffected() == 0 {
