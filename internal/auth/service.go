@@ -73,6 +73,11 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	if err := s.checkLockout(ctx, in); err != nil {
 		return LoginResult{}, err
 	}
+	// An empty password is never valid; short-circuit so it can never reach the
+	// LDAP bind (unauthenticated-bind bypass) or a nil-hash local account.
+	if in.Password == "" {
+		return LoginResult{}, s.registerFailure(ctx, in)
+	}
 	u, err := s.users.FindByUsername(ctx, in.Username)
 	if err == nil && u.Source == users.SourceLocal {
 		if u.Status != users.StatusActive {

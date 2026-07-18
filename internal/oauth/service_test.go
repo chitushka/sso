@@ -97,11 +97,15 @@ func (r *fakeRepo) MarkRefreshTokenRotated(_ context.Context, id uuid.UUID) erro
 	now := time.Now()
 	for hash, t := range r.refresh {
 		if t.ID == id {
+			if t.RotatedAt != nil {
+				return storage.ErrNotFound
+			}
 			t.RotatedAt = &now
 			r.refresh[hash] = t
+			return nil
 		}
 	}
-	return nil
+	return storage.ErrNotFound
 }
 func (r *fakeRepo) RevokeRefreshFamily(_ context.Context, familyID uuid.UUID) error {
 	now := time.Now()

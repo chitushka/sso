@@ -23,6 +23,10 @@ import (
 var (
 	ErrProviderDisabled = errors.New("identity provider is disabled")
 	ErrBrokerFailed     = errors.New("external authentication failed")
+	// ErrLinkRequiresMFA is returned when a brokered login matches, by email, a
+	// local account that has MFA enabled. Auto-linking there would let the
+	// external IdP bypass the user's second factor, so linking must be manual.
+	ErrLinkRequiresMFA = errors.New("account has mfa enabled and must be linked manually")
 )
 
 type Service struct {
@@ -159,9 +163,10 @@ func (s *Service) Callback(ctx context.Context, providerCode, rawState, code str
 }
 
 type externalIdentity struct {
-	Subject  string
-	Email    string
-	Username string
+	Subject       string
+	Email         string
+	EmailVerified bool
+	Username      string
 }
 
 func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (externalIdentity, error) {
@@ -215,6 +220,11 @@ func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (e
 	if v, ok := m["email"].(string); ok {
 		id.Email = v
 	}
+	// Only a boolean true is trusted. Providers that omit the claim (e.g. GitHub
+	// /user) leave this false, so the email is never used to link accounts.
+	if v, ok := m["email_verified"].(bool); ok {
+		id.EmailVerified = v
+	}
 	for _, k := range []string{"preferred_username", "login", "name"} {
 		if v, ok := m[k].(string); ok && v != "" {
 			id.Username = v
@@ -231,18 +241,28 @@ func (s *Service) resolveUser(ctx context.Context, p Provider, info externalIden
 	if fi, err := s.repo.FindIdentity(ctx, p.ID, info.Subject); err == nil {
 		return s.users.FindByID(ctx, fi.UserID)
 	}
-	// Link by verified email match, otherwise provision a new account (JIT).
+	// Link to an existing account only when the IdP asserts a *verified* email.
+	// Without that, anyone able to set an arbitrary email at the provider could
+	// claim a local account. An unverified/absent email → provision a new one (JIT).
 	var u users.User
 	var err error
-	if info.Email != "" {
+	if info.Email != "" && info.EmailVerified {
 		u, err = s.users.FindByEmail(ctx, info.Email)
 	} else {
 		err = storage.ErrNotFound
 	}
-	if errors.Is(err, storage.ErrNotFound) {
-		u, err = s.provisionUser(ctx, p, info)
-	}
-	if err != nil {
+	switch {
+	case err == nil:
+		// Never auto-attach a federated login to an MFA-protected account: that
+		// would silently bypass the user's second factor.
+		if u.MFAEnabled {
+			return users.User{}, ErrLinkRequiresMFA
+		}
+	case errors.Is(err, storage.ErrNotFound):
+		if u, err = s.provisionUser(ctx, p, info); err != nil {
+			return users.User{}, err
+		}
+	default:
 		return users.User{}, err
 	}
 	if err := s.repo.LinkIdentity(ctx, FederatedIdentity{ProviderID: p.ID, ExternalSubject: info.Subject, UserID: u.ID, Email: info.Email}); err != nil {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
+	"github.com/chitushka/sso/internal/storage"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/google/uuid"
 	"net/url"
@@ -304,6 +305,13 @@ func (s *Service) refreshGrant(ctx context.Context, in TokenInput) (TokenResult,
 		return TokenResult{}, ErrInvalidGrant
 	}
 	if err := s.repo.MarkRefreshTokenRotated(ctx, rt.ID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			// Lost the rotation race: the token was already spent concurrently,
+			// which is indistinguishable from reuse — kill the whole family.
+			_ = s.repo.RevokeRefreshFamily(ctx, rt.FamilyID)
+			_ = s.audit.Write(ctx, audit.Event{Action: "refresh_token_reuse_detected", TargetType: "oauth_client", TargetID: c.ClientID})
+			return TokenResult{}, ErrInvalidGrant
+		}
 		return TokenResult{}, err
 	}
 	return s.issue(ctx, u, c, rt.Scope, "", rt.CreatedAt, rt.FamilyID)

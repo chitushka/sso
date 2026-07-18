@@ -119,9 +119,19 @@ func (r *PostgresRepository) CreateRefreshToken(ctx context.Context, t RefreshTo
 func (r *PostgresRepository) FindRefreshTokenByHash(ctx context.Context, hash string) (RefreshToken, error) {
 	return scanRefreshToken(r.pool.QueryRow(ctx, `SELECT `+refreshCols+` FROM refresh_tokens WHERE token_hash=$1`, hash))
 }
+
+// MarkRefreshTokenRotated flips the token to rotated atomically. The
+// rotated_at IS NULL guard means a concurrent refresh of the same token can
+// only win once; the loser gets ErrNotFound and the caller treats it as reuse.
 func (r *PostgresRepository) MarkRefreshTokenRotated(ctx context.Context, id uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `UPDATE refresh_tokens SET rotated_at=now() WHERE id=$1`, id)
-	return err
+	tag, err := r.pool.Exec(ctx, `UPDATE refresh_tokens SET rotated_at=now() WHERE id=$1 AND rotated_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return storage.ErrNotFound
+	}
+	return nil
 }
 func (r *PostgresRepository) RevokeRefreshFamily(ctx context.Context, familyID uuid.UUID) error {
 	_, err := r.pool.Exec(ctx, `UPDATE refresh_tokens SET revoked_at=now() WHERE family_id=$1 AND revoked_at IS NULL`, familyID)

@@ -2,6 +2,7 @@ package account
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 
@@ -200,9 +201,11 @@ func currentUser(w http.ResponseWriter, req *http.Request) (uuid.UUID, bool) {
 	return id, true
 }
 
+// clientIP returns the peer address; RealIP has already folded any trusted
+// X-Forwarded-For into RemoteAddr and removed the header.
 func clientIP(r *http.Request) string {
-	if x := r.Header.Get("X-Forwarded-For"); x != "" {
-		return strings.TrimSpace(strings.Split(x, ",")[0])
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
 	return r.RemoteAddr
 }

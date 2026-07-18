@@ -125,6 +125,19 @@ func TestLoginLocksAfterMaxFailures(t *testing.T) {
 	}
 }
 
+func TestLoginRejectsEmptyPassword(t *testing.T) {
+	attempts := newMemAttempts()
+	svc := newLockoutService(attempts, &memAudit{})
+	// An empty password must never authenticate, even for an existing user, and
+	// must count as a failed attempt (defends against LDAP unauthenticated bind).
+	if _, err := svc.Login(context.Background(), LoginInput{Username: "alice", Password: "", IP: "1.2.3.4"}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("want ErrInvalidCredentials for empty password, got %v", err)
+	}
+	if attempts.attempts["alice|1.2.3.4"] != 1 {
+		t.Fatalf("empty password must register a failed attempt, got %d", attempts.attempts["alice|1.2.3.4"])
+	}
+}
+
 func TestLoginFromDifferentIPNotLocked(t *testing.T) {
 	attempts := newMemAttempts()
 	svc := newLockoutService(attempts, &memAudit{})

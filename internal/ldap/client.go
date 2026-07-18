@@ -41,6 +41,12 @@ func (c *Client) TestConnection(ctx context.Context, p Provider) error {
 	return conn.Bind(p.BindDN, p.BindPassword)
 }
 func (c *Client) Authenticate(ctx context.Context, p Provider, username, password string) (Identity, error) {
+	// An empty password turns the user bind below into an LDAP "unauthenticated
+	// bind" (RFC 4513 §5.1.2), which many directories accept as success — that
+	// would be an authentication bypass. Reject it before touching the server.
+	if password == "" {
+		return Identity{}, ErrInvalidCredentials
+	}
 	conn, err := c.dial(p)
 	if err != nil {
 		return Identity{}, err

@@ -7,8 +7,8 @@ import (
 	"github.com/chitushka/sso/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"net"
 	"net/http"
-	"strings"
 )
 
 type loginRequest struct {
@@ -118,9 +118,13 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 		})
 	})
 }
+
+// clientIP returns the peer address. RealIP middleware has already resolved any
+// trusted X-Forwarded-For into RemoteAddr and stripped the header, so trusting
+// the header here would only reopen the per-IP lockout/rate-limit bypass.
 func clientIP(r *http.Request) string {
-	if x := r.Header.Get("X-Forwarded-For"); x != "" {
-		return strings.TrimSpace(strings.Split(x, ",")[0])
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
 	return r.RemoteAddr
 }
