@@ -48,7 +48,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 			httpx.JSON(w, 200, map[string]string{"status": "logged_out"})
 		})
-		r.With(BearerAuth(jwtSecret)).Get("/sessions", func(w http.ResponseWriter, r *http.Request) {
+		r.With(BearerAuth(jwtSecret, userRepo)).Get("/sessions", func(w http.ResponseWriter, r *http.Request) {
 			claims := ClaimsFromContext(r.Context())
 			userID, err := uuid.Parse(claims.UserID)
 			if err != nil {
@@ -62,7 +62,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 			}
 			httpx.JSON(w, 200, out)
 		})
-		r.With(BearerAuth(jwtSecret)).Delete("/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+		r.With(BearerAuth(jwtSecret, userRepo)).Delete("/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 			claims := ClaimsFromContext(r.Context())
 			userID, err := uuid.Parse(claims.UserID)
 			if err != nil {
@@ -84,7 +84,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 			}
 			httpx.JSON(w, 200, map[string]string{"status": "revoked"})
 		})
-		r.With(BearerAuth(jwtSecret)).Delete("/sessions", func(w http.ResponseWriter, r *http.Request) {
+		r.With(BearerAuth(jwtSecret, userRepo)).Delete("/sessions", func(w http.ResponseWriter, r *http.Request) {
 			claims := ClaimsFromContext(r.Context())
 			userID, err := uuid.Parse(claims.UserID)
 			if err != nil {
@@ -95,10 +95,12 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 				httpx.Error(w, 500, "failed to revoke sessions")
 				return
 			}
+			// "Sign out everywhere" must also kill already-issued access tokens.
+			_ = userRepo.InvalidateTokens(r.Context(), userID)
 			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 			httpx.JSON(w, 200, map[string]string{"status": "all_revoked"})
 		})
-		r.With(BearerAuth(jwtSecret)).Get("/me", func(w http.ResponseWriter, r *http.Request) {
+		r.With(BearerAuth(jwtSecret, userRepo)).Get("/me", func(w http.ResponseWriter, r *http.Request) {
 			claims := ClaimsFromContext(r.Context())
 			id, err := uuid.Parse(claims.UserID)
 			if err != nil {

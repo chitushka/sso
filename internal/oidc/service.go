@@ -52,6 +52,9 @@ const (
 	keyMaxAge             = 30 * 24 * time.Hour
 	retireGrace           = 24 * time.Hour
 	rotationCheckInterval = time.Hour
+	// maxLogoutHintAge bounds how long an id_token_hint stays usable for
+	// RP-initiated logout after it was issued.
+	maxLogoutHintAge = 24 * time.Hour
 )
 
 func (s *Service) EnsureActiveKey(ctx context.Context) error {
@@ -149,9 +152,16 @@ func (s *Service) VerifyIDToken(ctx context.Context, raw string) (string, string
 	if err != nil || !token.Valid {
 		return "", "", errors.New("invalid id token")
 	}
-	// Expiry is deliberately not enforced: RP-initiated logout allows expired hints.
+	// Expiry itself is deliberately not enforced (RP-initiated logout allows an
+	// expired hint), but the hint must not be usable forever: bound its age via
+	// iat so a leaked id_token cannot drive logout indefinitely.
 	if iss, _ := claims["iss"].(string); iss != s.issuer {
 		return "", "", errors.New("invalid issuer")
+	}
+	if iat, ok := claims["iat"].(float64); ok {
+		if time.Since(time.Unix(int64(iat), 0)) > maxLogoutHintAge {
+			return "", "", errors.New("id token hint too old")
+		}
 	}
 	sub, _ := claims["sub"].(string)
 	aud, _ := claims["aud"].(string)

@@ -3,6 +3,8 @@ package users
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/chitushka/sso/internal/storage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -17,7 +19,7 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 }
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Status, &u.Source, &u.FirstName, &u.LastName, &u.Attributes, &u.EmailVerified, &u.MFAEnabled, &u.MFASecret, &u.LDAPProviderID, &u.LDAPDN, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
+	err := row.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Status, &u.Source, &u.FirstName, &u.LastName, &u.Attributes, &u.EmailVerified, &u.MFAEnabled, &u.MFASecret, &u.MFALastUsedCounter, &u.LDAPProviderID, &u.LDAPDN, &u.TokensInvalidBefore, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return u, storage.ErrNotFound
 	}
@@ -27,7 +29,7 @@ func scanUser(row pgx.Row) (User, error) {
 	return u, err
 }
 
-const userCols = "id,username,email,password_hash,status,source,first_name,last_name,attributes,email_verified,mfa_enabled,mfa_secret,ldap_provider_id,ldap_dn,created_at,updated_at,last_login_at"
+const userCols = "id,username,email,password_hash,status,source,first_name,last_name,attributes,email_verified,mfa_enabled,mfa_secret,mfa_last_used_counter,ldap_provider_id,ldap_dn,tokens_invalid_before,created_at,updated_at,last_login_at"
 
 func (r *PostgresRepository) Create(ctx context.Context, u User) (User, error) {
 	if u.Attributes == nil {
@@ -99,6 +101,30 @@ func (r *PostgresRepository) SetPasswordHash(ctx context.Context, id uuid.UUID, 
 }
 func (r *PostgresRepository) TouchLastLogin(ctx context.Context, id uuid.UUID) error {
 	_, err := r.pool.Exec(ctx, `UPDATE users SET last_login_at=now() WHERE id=$1`, id)
+	return err
+}
+
+// InvalidateTokens revokes every access token already issued to the user by
+// advancing tokens_invalid_before to now(); BearerAuth rejects older tokens.
+func (r *PostgresRepository) InvalidateTokens(ctx context.Context, id uuid.UUID) error {
+	_, err := r.pool.Exec(ctx, `UPDATE users SET tokens_invalid_before=now(),updated_at=now() WHERE id=$1`, id)
+	return err
+}
+
+// TokensInvalidBefore returns the cutoff before which access tokens are void,
+// or nil if the user has never invalidated them.
+func (r *PostgresRepository) TokensInvalidBefore(ctx context.Context, id uuid.UUID) (*time.Time, error) {
+	var t *time.Time
+	err := r.pool.QueryRow(ctx, `SELECT tokens_invalid_before FROM users WHERE id=$1`, id).Scan(&t)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, storage.ErrNotFound
+	}
+	return t, err
+}
+
+// SetMFACounter persists the last accepted TOTP time-step to block replay.
+func (r *PostgresRepository) SetMFACounter(ctx context.Context, id uuid.UUID, counter int64) error {
+	_, err := r.pool.Exec(ctx, `UPDATE users SET mfa_last_used_counter=$2 WHERE id=$1`, id, counter)
 	return err
 }
 func (r *PostgresRepository) Count(ctx context.Context) (int64, error) {

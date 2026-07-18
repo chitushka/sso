@@ -84,26 +84,39 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	r.Use(middleware.Recoverer(logger))
 	r.Use(middleware.Logger(logger))
 	r.Use(cors.Handler(cors.Options{AllowedOrigins: cfg.CORS.AllowedOrigins, AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}, AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"}, AllowCredentials: true, MaxAge: 300}))
-	r.Use(middleware.RateLimit(middleware.NewTokenBucketLimiter(30, 10), "/api/v1/auth/login", "/oauth2/token", "/api/v1/bootstrap"))
+	r.Use(middleware.BodyLimit(1 << 20)) // 1 MiB cap on request bodies
+	r.Use(middleware.RateLimit(middleware.NewTokenBucketLimiter(30, 10),
+		"/api/v1/auth/login",
+		"/api/v1/auth/mfa/verify",
+		"/api/v1/auth/password/forgot",
+		"/api/v1/auth/password/reset",
+		"/api/v1/auth/email/verify",
+		"/oauth2/token",
+		"/oauth2/revoke",
+		"/oauth2/introspect",
+		"/api/v1/bootstrap"))
 	r.Get("/metrics", metrics.Expose)
 	health.RegisterRoutes(r, pool, version)
 	require := func(resource, action string) func(http.Handler) http.Handler {
 		return rbac.RequirePermission(rbacRepo, resource, action)
 	}
+	// One Bearer middleware, wired to the user repo so revoked/blocked accounts
+	// and "sign out everywhere" invalidate already-issued access tokens.
+	bearer := auth.BearerAuth([]byte(cfg.Security.JWTSecret), userRepo)
 	bootstrap.RegisterRoutes(r, bootstrapSvc)
 	auth.RegisterRoutes(r, authSvc, userRepo, sessionRepo, []byte(cfg.Security.JWTSecret))
-	users.RegisterRoutes(r, userSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
-	ldap.RegisterRoutes(r, ldapSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
-	oauth.RegisterRoutes(r, oauthSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
-	rbac.RegisterRoutes(r, rbacSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), rbacRepo)
-	audit.RegisterRoutes(r, auditRepo, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
-	account.RegisterRoutes(r, accountSvc, authSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)))
+	users.RegisterRoutes(r, userSvc, bearer, require)
+	ldap.RegisterRoutes(r, ldapSvc, bearer, require)
+	oauth.RegisterRoutes(r, oauthSvc, bearer, require)
+	rbac.RegisterRoutes(r, rbacSvc, bearer, rbacRepo)
+	audit.RegisterRoutes(r, auditRepo, bearer, require)
+	account.RegisterRoutes(r, accountSvc, authSvc, bearer)
 	brokerRepo := broker.NewPostgresRepository(pool, encryptor)
 	brokerSvc := broker.NewService(brokerRepo, userRepo, authSvc, auditRepo, cfg.OIDC.Issuer, []byte(cfg.Security.JWTSecret))
-	broker.RegisterRoutes(r, brokerSvc, auth.BearerAuth([]byte(cfg.Security.JWTSecret)), require)
+	broker.RegisterRoutes(r, brokerSvc, bearer, require)
 	startCleanup(ctx, pool, logger)
 	registerSPA(r, logger)
-	oidc.RegisterRoutes(r, oidcSvc, userRepo, auth.BearerAuth([]byte(cfg.Security.JWTSecret)))
+	oidc.RegisterRoutes(r, oidcSvc, userRepo, bearer)
 	return &App{pool: pool, router: r}, nil
 }
 func (a *App) Router() http.Handler { return a.router }

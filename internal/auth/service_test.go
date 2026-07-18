@@ -28,9 +28,14 @@ func (m *memUsers) Update(_ context.Context, u users.User) (users.User, error)  
 func (m *memUsers) SetPasswordHash(_ context.Context, _ uuid.UUID, _ string) error { return nil }
 func (m *memUsers) SetEmailVerified(_ context.Context, _ uuid.UUID, _ bool) error  { return nil }
 func (m *memUsers) SetMFA(_ context.Context, _ uuid.UUID, _ bool, _ string) error  { return nil }
+func (m *memUsers) SetMFACounter(_ context.Context, _ uuid.UUID, _ int64) error    { return nil }
 func (m *memUsers) FindByEmail(_ context.Context, _ string) (users.User, error)    { return m.u, nil }
 func (m *memUsers) TouchLastLogin(_ context.Context, _ uuid.UUID) error            { return nil }
-func (m *memUsers) Count(_ context.Context) (int64, error)                         { return 1, nil }
+func (m *memUsers) InvalidateTokens(_ context.Context, _ uuid.UUID) error          { return nil }
+func (m *memUsers) TokensInvalidBefore(_ context.Context, _ uuid.UUID) (*time.Time, error) {
+	return nil, nil
+}
+func (m *memUsers) Count(_ context.Context) (int64, error) { return 1, nil }
 
 type memSessions struct{}
 
@@ -61,6 +66,9 @@ func (memTokens) Issue(_ users.User) (string, time.Time, error) {
 	return "jwt", time.Now().Add(15 * time.Minute), nil
 }
 func (memTokens) IssueOAuthAccessToken(_ users.User, _, _ string) (string, time.Time, error) {
+	return "jwt", time.Now().Add(15 * time.Minute), nil
+}
+func (memTokens) IssueClientCredentialsToken(_ users.User, _, _ string) (string, time.Time, error) {
 	return "jwt", time.Now().Add(15 * time.Minute), nil
 }
 

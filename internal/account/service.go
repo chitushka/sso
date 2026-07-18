@@ -76,8 +76,8 @@ func (s *Service) ForgotPassword(ctx context.Context, login, ip, ua string) {
 }
 
 func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword, ip, ua string) error {
-	if len(newPassword) < 8 {
-		return errors.New("password must contain at least 8 characters")
+	if err := users.ValidatePassword(newPassword); err != nil {
+		return err
 	}
 	userID, err := s.tokens.Consume(ctx, PurposePasswordReset, HashToken(rawToken))
 	if err != nil {
@@ -90,11 +90,13 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword, ip, 
 	if err := s.users.SetPasswordHash(ctx, userID, hash); err != nil {
 		return err
 	}
-	// A reset means the old credentials may be compromised: cut every session.
+	// A reset means the old credentials may be compromised: cut every session,
+	// refresh token and already-issued access token.
 	_ = s.sessions.RevokeAllByUser(ctx, userID)
 	if s.refresh != nil {
 		_ = s.refresh.RevokeRefreshTokensByUser(ctx, userID)
 	}
+	_ = s.users.InvalidateTokens(ctx, userID)
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "password_reset_completed", TargetType: "user", TargetID: userID.String(), IP: ip, UserAgent: ua})
 	return nil
 }
@@ -102,8 +104,8 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword, ip, 
 // ChangePassword is the self-service flow: requires the current password,
 // keeps the current session but revokes the others.
 func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword, newPassword string) error {
-	if len(newPassword) < 8 {
-		return errors.New("password must contain at least 8 characters")
+	if err := users.ValidatePassword(newPassword); err != nil {
+		return err
 	}
 	u, err := s.users.FindByID(ctx, userID)
 	if err != nil {
@@ -251,8 +253,15 @@ func (s *Service) MFADisable(ctx context.Context, userID uuid.UUID, code string)
 func (s *Service) VerifyCode(ctx context.Context, u users.User, code string) (bool, error) {
 	if u.MFASecret != "" {
 		secret, err := s.encryptor.Decrypt(u.MFASecret)
-		if err == nil && mfa.Verify(secret, code, time.Now()) {
-			return true, nil
+		if err == nil {
+			if ok, counter := mfa.VerifyWithCounter(secret, code, time.Now()); ok {
+				// Reject replay: a time-step may be spent at most once.
+				if int64(counter) <= u.MFALastUsedCounter {
+					return false, nil
+				}
+				_ = s.users.SetMFACounter(ctx, u.ID, int64(counter))
+				return true, nil
+			}
 		}
 	}
 	used, err := s.recovery.Consume(ctx, u.ID, HashToken(code))

@@ -165,9 +165,14 @@ func (f *fakeUsers) Update(_ context.Context, u users.User) (users.User, error) 
 func (f *fakeUsers) SetPasswordHash(_ context.Context, _ uuid.UUID, _ string) error { return nil }
 func (f *fakeUsers) SetEmailVerified(_ context.Context, _ uuid.UUID, _ bool) error  { return nil }
 func (f *fakeUsers) SetMFA(_ context.Context, _ uuid.UUID, _ bool, _ string) error  { return nil }
+func (f *fakeUsers) SetMFACounter(_ context.Context, _ uuid.UUID, _ int64) error    { return nil }
 func (f *fakeUsers) FindByEmail(_ context.Context, _ string) (users.User, error)    { return f.u, nil }
 func (f *fakeUsers) TouchLastLogin(_ context.Context, _ uuid.UUID) error            { return nil }
-func (f *fakeUsers) Count(_ context.Context) (int64, error)                         { return 1, nil }
+func (f *fakeUsers) InvalidateTokens(_ context.Context, _ uuid.UUID) error          { return nil }
+func (f *fakeUsers) TokensInvalidBefore(_ context.Context, _ uuid.UUID) (*time.Time, error) {
+	return nil, nil
+}
+func (f *fakeUsers) Count(_ context.Context) (int64, error) { return 1, nil }
 
 type fakeSessions struct{ s auth.Session }
 
@@ -190,6 +195,9 @@ func (fakeTokens) Issue(_ users.User) (string, time.Time, error) {
 }
 func (fakeTokens) IssueOAuthAccessToken(_ users.User, _, _ string) (string, time.Time, error) {
 	return "access-token", time.Now().Add(15 * time.Minute), nil
+}
+func (fakeTokens) IssueClientCredentialsToken(_ users.User, _, _ string) (string, time.Time, error) {
+	return "client-token", time.Now().Add(15 * time.Minute), nil
 }
 
 type fakeAudit struct{}

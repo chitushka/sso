@@ -232,7 +232,7 @@ func (s *Service) clientCredentialsGrant(ctx context.Context, in TokenInput) (To
 		return TokenResult{}, err
 	}
 	svcAccount := users.User{ID: c.ID, Username: c.ClientID, Source: "client"}
-	access, exp, err := s.tokens.IssueOAuthAccessToken(svcAccount, c.ClientID, in.Scope)
+	access, exp, err := s.tokens.IssueClientCredentialsToken(svcAccount, c.ClientID, in.Scope)
 	if err != nil {
 		return TokenResult{}, err
 	}

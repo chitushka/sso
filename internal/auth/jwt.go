@@ -6,6 +6,7 @@ import (
 	"github.com/chitushka/sso/internal/httpx"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"net/http"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ type Claims struct {
 type JWTIssuer interface {
 	Issue(u users.User) (string, time.Time, error)
 	IssueOAuthAccessToken(u users.User, clientID, scope string) (string, time.Time, error)
+	IssueClientCredentialsToken(u users.User, clientID, scope string) (string, time.Time, error)
 }
 type HMACJWTIssuer struct {
 	secret []byte
@@ -75,9 +77,28 @@ func (i *HMACJWTIssuer) IssueOAuthAccessToken(u users.User, clientID, scope stri
 	return s, exp, err
 }
 
+// IssueClientCredentialsToken issues a service-account access token. It carries
+// Purpose="client_credentials" so BearerAuth refuses it for this SSO's own APIs
+// (those are for human users); it stays valid for external resource servers and
+// for introspection.
+func (i *HMACJWTIssuer) IssueClientCredentialsToken(u users.User, clientID, scope string) (string, time.Time, error) {
+	exp := time.Now().Add(i.ttl)
+	claims := Claims{UserID: u.ID.String(), Username: u.Username, Source: u.Source, ClientID: clientID, Scope: scope, Purpose: "client_credentials", RegisteredClaims: jwt.RegisteredClaims{Subject: u.ID.String(), ExpiresAt: jwt.NewNumericDate(exp), IssuedAt: jwt.NewNumericDate(time.Now())}}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	s, err := token.SignedString(i.secret)
+	return s, exp, err
+}
+
 type claimsKey struct{}
 
-func BearerAuth(secret []byte) func(http.Handler) http.Handler {
+// TokenChecker reports the moment before which a user's access tokens are void,
+// letting BearerAuth honour "sign out everywhere"/password-reset/block. nil = no
+// revocation check (stateless).
+type TokenChecker interface {
+	TokensInvalidBefore(ctx context.Context, userID uuid.UUID) (*time.Time, error)
+}
+
+func BearerAuth(secret []byte, revocations TokenChecker) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
@@ -98,9 +119,27 @@ func BearerAuth(secret []byte) func(http.Handler) http.Handler {
 				return
 			}
 			if claims.Purpose != "" {
-				// Special-purpose tokens (e.g. mfa-pending) never grant API access.
+				// Special-purpose tokens (mfa-pending, client_credentials) never
+				// grant access to this SSO's own APIs.
 				httpx.Error(w, 401, "invalid token")
 				return
+			}
+			if revocations != nil {
+				userID, perr := uuid.Parse(claims.UserID)
+				if perr != nil {
+					httpx.Error(w, 401, "invalid token")
+					return
+				}
+				invBefore, cerr := revocations.TokensInvalidBefore(r.Context(), userID)
+				if cerr != nil {
+					httpx.Error(w, 401, "invalid token")
+					return
+				}
+				// Reject tokens issued at or before the invalidation cutoff.
+				if invBefore != nil && (claims.IssuedAt == nil || !claims.IssuedAt.Time.After(*invBefore)) {
+					httpx.Error(w, 401, "token revoked")
+					return
+				}
 			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), claimsKey{}, claims)))
 		})

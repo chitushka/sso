@@ -47,8 +47,11 @@ func (s *Service) CreateAdmin(ctx context.Context, in CreateAdminInput, ip, ua s
 	if st.Initialized {
 		return users.User{}, ErrAlreadyInitialized
 	}
-	if strings.TrimSpace(in.Username) == "" || strings.TrimSpace(in.Email) == "" || len(in.Password) < 12 {
-		return users.User{}, errors.New("username, email and password>=12 are required")
+	if strings.TrimSpace(in.Username) == "" || strings.TrimSpace(in.Email) == "" {
+		return users.User{}, errors.New("username and email are required")
+	}
+	if err := users.ValidatePassword(in.Password); err != nil {
+		return users.User{}, err
 	}
 	h, err := s.passwords.Hash(in.Password)
 	if err != nil {

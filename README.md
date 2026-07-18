@@ -276,3 +276,21 @@ Deferred (no consumer yet): SAML 2.0, SCIM, token exchange.
 - **Trusted-proxy-aware client IP**: `RealIP` middleware resolves `X-Forwarded-For` only from `SSO_TRUSTED_PROXIES`, closing the brute-force/rate-limit bypass.
 - **Observability**: `/metrics` (Prometheus text format: request counts by route/status, in-flight gauge, duration sum) and `/health/version`.
 - **Ops hardening**: docker-compose gained a Postgres healthcheck with `depends_on: condition`, `restart: unless-stopped`, migrate-on-start, and secrets via env interpolation instead of hardcoded values. Binary version is injected with `-ldflags -X main.version`.
+
+## Release 1.1 - Security Hardening
+
+Run migration `000010_hardening` before starting v1.1.
+
+- **Revocable access tokens**: `users.tokens_invalid_before` is set on "sign out everywhere" (`DELETE /api/v1/auth/sessions`), password reset and account block/delete; `BearerAuth` rejects any access token issued at or before that moment (`token revoked`). Adds one indexed user lookup per authenticated request.
+- **TOTP replay protection**: the last accepted time-step is stored in `users.mfa_last_used_counter`; a code cannot be reused within its validity window.
+- **Federated login safety**: accounts are linked to an external identity only when the provider asserts a verified email (`email_verified`), and never auto-linked to an MFA-protected local account (manual linking required) — closes an account-takeover / MFA-bypass path.
+- **LDAP**: empty passwords are rejected before bind, closing the LDAP "unauthenticated bind" login bypass.
+- **Refresh rotation** is now race-free: rotation is a single atomic `UPDATE ... WHERE rotated_at IS NULL`; losing the race is treated as token reuse and revokes the family.
+- **client_credentials** access tokens carry `purpose=client_credentials` and are refused by `BearerAuth` for this SSO's own APIs (still valid for external resource servers and introspection).
+- **Uniform password policy**: minimum 12 characters everywhere (bootstrap, admin create, reset, change), max 128.
+- **Wider rate limiting**: the token bucket now also covers `/api/v1/auth/mfa/verify`, `/api/v1/auth/password/forgot`, `/api/v1/auth/password/reset`, `/api/v1/auth/email/verify`, `/oauth2/revoke` and `/oauth2/introspect`.
+- **Request body cap**: a 1 MiB `BodyLimit` middleware guards JSON/form endpoints against oversized-payload memory exhaustion.
+- **RP-initiated logout**: `id_token_hint` is bounded to 24h by `iat` so a leaked ID token cannot drive logout indefinitely.
+- **`X-Forwarded-For`**: the remaining `clientIP` helpers no longer read the header (RealIP already normalizes `RemoteAddr`), removing a latent spoofing regression.
+
+Still a documented trade-off (not in scope here): the in-memory rate limiter and lockout counters are per-instance, so horizontal scaling needs a shared store (Redis); example configs use `sslmode=disable` and placeholder secrets that must be replaced in production.

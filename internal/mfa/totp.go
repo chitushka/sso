@@ -51,18 +51,25 @@ func code(secret string, counter uint64) (string, error) {
 // Verify accepts the code for the current period and one period either side
 // to tolerate clock drift.
 func Verify(secret, otp string, at time.Time) bool {
+	ok, _ := VerifyWithCounter(secret, otp, at)
+	return ok
+}
+
+// VerifyWithCounter is like Verify but also returns the matched time-step, so
+// the caller can persist it and reject replays of that step within its window.
+func VerifyWithCounter(secret, otp string, at time.Time) (bool, uint64) {
 	if len(otp) != digits {
-		return false
+		return false, 0
 	}
 	counter := uint64(at.Unix()) / period
 	for _, c := range []uint64{counter, counter - 1, counter + 1} {
 		expected, err := code(secret, c)
 		if err != nil {
-			return false
+			return false, 0
 		}
 		if subtle.ConstantTimeCompare([]byte(expected), []byte(otp)) == 1 {
-			return true
+			return true, c
 		}
 	}
-	return false
+	return false, 0
 }

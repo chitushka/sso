@@ -40,8 +40,11 @@ type UpdateUserInput struct {
 }
 
 func (s *Service) Create(ctx context.Context, in CreateUserInput, ip, ua string) (User, error) {
-	if strings.TrimSpace(in.Username) == "" || strings.TrimSpace(in.Email) == "" || len(in.Password) < 8 {
-		return User{}, errors.New("username, email and password>=8 are required")
+	if strings.TrimSpace(in.Username) == "" || strings.TrimSpace(in.Email) == "" {
+		return User{}, errors.New("username and email are required")
+	}
+	if err := ValidatePassword(in.Password); err != nil {
+		return User{}, err
 	}
 	if in.Status == "" {
 		in.Status = StatusActive
@@ -84,12 +87,14 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID, ip, ua string) error
 	if _, err := s.repo.Update(ctx, u); err != nil {
 		return err
 	}
+	// A blocked account must lose its live access tokens immediately.
+	_ = s.repo.InvalidateTokens(ctx, id)
 	_ = s.audit.Write(ctx, audit.Event{Action: "user_deleted", TargetType: "user", TargetID: id.String(), IP: ip, UserAgent: ua})
 	return nil
 }
 func (s *Service) SetPassword(ctx context.Context, id uuid.UUID, password string) error {
-	if len(password) < 8 {
-		return errors.New("password must contain at least 8 characters")
+	if err := ValidatePassword(password); err != nil {
+		return err
 	}
 	h, err := s.passwords.Hash(password)
 	if err != nil {

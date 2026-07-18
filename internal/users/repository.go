@@ -2,6 +2,8 @@ package users
 
 import (
 	"context"
+	"time"
+
 	"github.com/google/uuid"
 )
 
@@ -15,7 +17,10 @@ type Repository interface {
 	SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error
 	SetEmailVerified(ctx context.Context, id uuid.UUID, verified bool) error
 	SetMFA(ctx context.Context, id uuid.UUID, enabled bool, secret string) error
+	SetMFACounter(ctx context.Context, id uuid.UUID, counter int64) error
 	FindByEmail(ctx context.Context, email string) (User, error)
 	TouchLastLogin(ctx context.Context, id uuid.UUID) error
+	InvalidateTokens(ctx context.Context, id uuid.UUID) error
+	TokensInvalidBefore(ctx context.Context, id uuid.UUID) (*time.Time, error)
 	Count(ctx context.Context) (int64, error)
 }

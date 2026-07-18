@@ -18,6 +18,24 @@ func TestRFC6238Vector(t *testing.T) {
 	}
 }
 
+func TestVerifyWithCounterReportsStep(t *testing.T) {
+	secret, err := GenerateSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	step := uint64(now.Unix()) / 30
+	current, _ := code(secret, step)
+	ok, got := VerifyWithCounter(secret, current, now)
+	if !ok || got != step {
+		t.Fatalf("want match at step %d, got ok=%v step=%d", step, ok, got)
+	}
+	// The returned step lets callers reject a replay of the same code.
+	if ok, _ := VerifyWithCounter(secret, "000000", now); ok {
+		t.Fatal("wrong code must not verify")
+	}
+}
+
 func TestVerifyWindow(t *testing.T) {
 	secret, err := GenerateSecret()
 	if err != nil {
