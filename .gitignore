@@ -1,12 +1,17 @@
+.idea/
+.vscode/
+.DS_Store
 bin/
+node_modules/
 dist/
+
 *.exe
 *.test
 *.out
 .env
 *.local
-.idea/
-.vscode/
-.DS_Store
-vendor/
-node_modules/
+
+# AI agents
+.claude/
+.codex/
+AGENTS.md
