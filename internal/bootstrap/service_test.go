@@ -78,8 +78,8 @@ func (f *fakeUsersRepo) FindByEmail(ctx context.Context, email string) (users.Us
 }
 func (f *fakeUsersRepo) TouchLastLogin(ctx context.Context, id uuid.UUID) error   { return nil }
 func (f *fakeUsersRepo) InvalidateTokens(ctx context.Context, id uuid.UUID) error { return nil }
-func (f *fakeUsersRepo) TokensInvalidBefore(context.Context, uuid.UUID) (*time.Time, error) {
-	return nil, nil
+func (f *fakeUsersRepo) AccessState(context.Context, uuid.UUID) (bool, *time.Time, error) {
+	return true, nil, nil
 }
 func (f *fakeUsersRepo) Count(ctx context.Context) (int64, error) { return int64(len(f.items)), nil }
 

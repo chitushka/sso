@@ -91,11 +91,14 @@ func (i *HMACJWTIssuer) IssueClientCredentialsToken(u users.User, clientID, scop
 
 type claimsKey struct{}
 
-// TokenChecker reports the moment before which a user's access tokens are void,
-// letting BearerAuth honour "sign out everywhere"/password-reset/block. nil = no
-// revocation check (stateless).
+// TokenChecker gives BearerAuth the per-user state it needs to reject stale
+// tokens: whether the account is still active (blocked/deleted accounts lose
+// access immediately, including OAuth tokens held by external apps) and the
+// cutoff before which first-party tokens are void ("sign out everywhere",
+// password reset). nil = no revocation check (stateless). Both facts come from a
+// single lookup so an authenticated request costs at most one extra query.
 type TokenChecker interface {
-	TokensInvalidBefore(ctx context.Context, userID uuid.UUID) (*time.Time, error)
+	AccessState(ctx context.Context, userID uuid.UUID) (active bool, invalidBefore *time.Time, err error)
 }
 
 func BearerAuth(secret []byte, revocations TokenChecker) func(http.Handler) http.Handler {
@@ -130,13 +133,22 @@ func BearerAuth(secret []byte, revocations TokenChecker) func(http.Handler) http
 					httpx.Error(w, 401, "invalid token")
 					return
 				}
-				invBefore, cerr := revocations.TokensInvalidBefore(r.Context(), userID)
+				active, invBefore, cerr := revocations.AccessState(r.Context(), userID)
 				if cerr != nil {
 					httpx.Error(w, 401, "invalid token")
 					return
 				}
-				// Reject tokens issued at or before the invalidation cutoff.
-				if invBefore != nil && (claims.IssuedAt == nil || !claims.IssuedAt.Time.After(*invBefore)) {
+				// A blocked/deleted account loses access immediately — this
+				// covers OAuth tokens held by external apps too (they carry a
+				// client_id), not just first-party tokens.
+				if !active {
+					httpx.Error(w, 401, "account is not active")
+					return
+				}
+				// The invalidation cutoff ("sign out everywhere", password reset)
+				// applies only to first-party tokens (no client_id); external
+				// apps' OAuth tokens keep their own lifetime/refresh.
+				if claims.ClientID == "" && invBefore != nil && (claims.IssuedAt == nil || !claims.IssuedAt.Time.After(*invBefore)) {
 					httpx.Error(w, 401, "token revoked")
 					return
 				}

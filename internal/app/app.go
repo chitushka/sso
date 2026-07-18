@@ -47,6 +47,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 		return nil, err
 	}
 	userRepo := users.NewPostgresRepository(pool)
+	// Short-TTL cache in front of the per-request revocation check so BearerAuth
+	// does not hit the DB on every authenticated request; block and "sign out
+	// everywhere" bust it explicitly for immediate effect.
+	accessCache := auth.NewCachedTokenChecker(userRepo, auth.AccessCacheTTL)
 	sessionRepo := auth.NewPostgresSessionRepository(pool)
 	auditRepo := audit.NewPostgresRepository(pool)
 	rbacRepo := rbac.NewPostgresRepository(pool)
@@ -64,11 +68,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	recoveryRepo := account.NewPostgresRecoveryCodeRepository(pool)
 	accountSvc := account.NewService(userRepo, tokenRepo, recoveryRepo, sessionRepo, passwords, encryptor, mail, auditRepo, cfg.OIDC.Issuer)
 	authSvc := auth.NewService(userRepo, sessionRepo, auditRepo, passwords, tokens, cfg.Token.SessionTTL).WithLDAP(ldapAuth).WithLockout(loginAttempts).WithMFA(accountSvc, tokens)
-	userSvc := users.NewService(userRepo, passwords, auditRepo)
+	userSvc := users.NewService(userRepo, passwords, auditRepo).WithTokenCache(accessCache)
 	bootstrapSvc := bootstrap.NewService(userRepo, passwords, rbacRepo, auditRepo)
 	oauthRepo := oauth.NewPostgresRepository(pool, passwords)
 	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, tokens, auditRepo, passwords).WithTokenVerifier(tokens).WithRefreshTTL(cfg.Token.RefreshTTL)
-	accountSvc.WithRefreshRevoker(oauthRepo)
+	accountSvc.WithRefreshRevoker(oauthRepo).WithTokenCache(accessCache)
 	oidcKeys := oidc.NewPostgresKeyStore(pool)
 	oidcSvc := oidc.NewService(cfg.OIDC.Issuer, oidcKeys)
 	_ = oidcSvc.EnsureActiveKey(ctx)
@@ -100,11 +104,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	require := func(resource, action string) func(http.Handler) http.Handler {
 		return rbac.RequirePermission(rbacRepo, resource, action)
 	}
-	// One Bearer middleware, wired to the user repo so revoked/blocked accounts
-	// and "sign out everywhere" invalidate already-issued access tokens.
-	bearer := auth.BearerAuth([]byte(cfg.Security.JWTSecret), userRepo)
+	// One Bearer middleware for every protected router, sharing the access-state
+	// cache so blocks and "sign out everywhere" are honoured consistently.
+	bearer := auth.BearerAuth([]byte(cfg.Security.JWTSecret), accessCache)
 	bootstrap.RegisterRoutes(r, bootstrapSvc)
-	auth.RegisterRoutes(r, authSvc, userRepo, sessionRepo, []byte(cfg.Security.JWTSecret))
+	auth.RegisterRoutes(r, authSvc, userRepo, sessionRepo, []byte(cfg.Security.JWTSecret), accessCache)
 	users.RegisterRoutes(r, userSvc, bearer, require)
 	ldap.RegisterRoutes(r, ldapSvc, bearer, require)
 	oauth.RegisterRoutes(r, oauthSvc, bearer, require)

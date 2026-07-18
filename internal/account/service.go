@@ -34,23 +34,33 @@ type RefreshRevoker interface {
 	RevokeRefreshTokensByUser(ctx context.Context, userID uuid.UUID) error
 }
 
+// TokenCacheInvalidator evicts a user's cached access state so a password reset
+// takes effect immediately instead of after the cache TTL.
+type TokenCacheInvalidator interface {
+	Invalidate(userID uuid.UUID)
+}
+
 type Service struct {
-	users     users.Repository
-	tokens    TokenRepository
-	recovery  RecoveryCodeRepository
-	sessions  auth.SessionRepository
-	passwords auth.PasswordHasher
-	encryptor secrets.Encryptor
-	mail      mailer.Mailer
-	audit     audit.Repository
-	refresh   RefreshRevoker
-	issuer    string
+	users      users.Repository
+	tokens     TokenRepository
+	recovery   RecoveryCodeRepository
+	sessions   auth.SessionRepository
+	passwords  auth.PasswordHasher
+	encryptor  secrets.Encryptor
+	mail       mailer.Mailer
+	audit      audit.Repository
+	refresh    RefreshRevoker
+	tokenCache TokenCacheInvalidator
+	issuer     string
 }
 
 func NewService(users users.Repository, tokens TokenRepository, recovery RecoveryCodeRepository, sessions auth.SessionRepository, passwords auth.PasswordHasher, encryptor secrets.Encryptor, mail mailer.Mailer, aud audit.Repository, issuer string) *Service {
 	return &Service{users: users, tokens: tokens, recovery: recovery, sessions: sessions, passwords: passwords, encryptor: encryptor, mail: mail, audit: aud, issuer: issuer}
 }
 func (s *Service) WithRefreshRevoker(r RefreshRevoker) *Service { s.refresh = r; return s }
+
+// WithTokenCache wires the access-state cache so a password reset busts it at once.
+func (s *Service) WithTokenCache(c TokenCacheInvalidator) *Service { s.tokenCache = c; return s }
 
 // ForgotPassword always succeeds from the caller's point of view so usernames
 // and emails cannot be enumerated.
@@ -97,6 +107,9 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword, ip, 
 		_ = s.refresh.RevokeRefreshTokensByUser(ctx, userID)
 	}
 	_ = s.users.InvalidateTokens(ctx, userID)
+	if s.tokenCache != nil {
+		s.tokenCache.Invalidate(userID)
+	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "password_reset_completed", TargetType: "user", TargetID: userID.String(), IP: ip, UserAgent: ua})
 	return nil
 }

@@ -11,10 +11,13 @@ import (
 	"github.com/google/uuid"
 )
 
-type stubChecker struct{ before *time.Time }
+type stubChecker struct {
+	active bool
+	before *time.Time
+}
 
-func (s stubChecker) TokensInvalidBefore(_ context.Context, _ uuid.UUID) (*time.Time, error) {
-	return s.before, nil
+func (s stubChecker) AccessState(_ context.Context, _ uuid.UUID) (bool, *time.Time, error) {
+	return s.active, s.before, nil
 }
 
 func serve(mw func(http.Handler) http.Handler, token string) int {
@@ -36,14 +39,30 @@ func TestBearerAuthHonoursTokenRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No cutoff → token is accepted.
-	if code := serve(BearerAuth(secret, stubChecker{before: nil}), token); code != 200 {
+	// Active account, no cutoff → token is accepted.
+	if code := serve(BearerAuth(secret, stubChecker{active: true, before: nil}), token); code != 200 {
 		t.Fatalf("valid token must pass, got %d", code)
 	}
-	// Cutoff after the token's iat → token is revoked.
+	// Cutoff after the token's iat → first-party token is revoked.
 	cutoff := time.Now().Add(time.Second)
-	if code := serve(BearerAuth(secret, stubChecker{before: &cutoff}), token); code != 401 {
+	if code := serve(BearerAuth(secret, stubChecker{active: true, before: &cutoff}), token); code != 401 {
 		t.Fatalf("revoked token must be rejected, got %d", code)
+	}
+	// An OAuth token issued to an external app (has a client_id) must survive the
+	// same cutoff: "sign out everywhere" must not knock external apps offline.
+	extToken, _, err := issuer.IssueOAuthAccessToken(u, "external-app", "openid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := serve(BearerAuth(secret, stubChecker{active: true, before: &cutoff}), extToken); code != 200 {
+		t.Fatalf("external-app token must not be revoked by cutoff, got %d", code)
+	}
+	// But a blocked account loses access immediately — even the external-app token.
+	if code := serve(BearerAuth(secret, stubChecker{active: false}), extToken); code != 401 {
+		t.Fatalf("blocked account's external token must be rejected, got %d", code)
+	}
+	if code := serve(BearerAuth(secret, stubChecker{active: false}), token); code != 401 {
+		t.Fatalf("blocked account's first-party token must be rejected, got %d", code)
 	}
 }
 

@@ -169,8 +169,8 @@ func (f *fakeUsers) SetMFACounter(_ context.Context, _ uuid.UUID, _ int64) error
 func (f *fakeUsers) FindByEmail(_ context.Context, _ string) (users.User, error)    { return f.u, nil }
 func (f *fakeUsers) TouchLastLogin(_ context.Context, _ uuid.UUID) error            { return nil }
 func (f *fakeUsers) InvalidateTokens(_ context.Context, _ uuid.UUID) error          { return nil }
-func (f *fakeUsers) TokensInvalidBefore(_ context.Context, _ uuid.UUID) (*time.Time, error) {
-	return nil, nil
+func (f *fakeUsers) AccessState(_ context.Context, _ uuid.UUID) (bool, *time.Time, error) {
+	return true, nil, nil
 }
 func (f *fakeUsers) Count(_ context.Context) (int64, error) { return 1, nil }
 

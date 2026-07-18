@@ -21,6 +21,6 @@ type Repository interface {
 	FindByEmail(ctx context.Context, email string) (User, error)
 	TouchLastLogin(ctx context.Context, id uuid.UUID) error
 	InvalidateTokens(ctx context.Context, id uuid.UUID) error
-	TokensInvalidBefore(ctx context.Context, id uuid.UUID) (*time.Time, error)
+	AccessState(ctx context.Context, id uuid.UUID) (active bool, invalidBefore *time.Time, err error)
 	Count(ctx context.Context) (int64, error)
 }

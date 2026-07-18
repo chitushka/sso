@@ -11,15 +11,25 @@ import (
 type PasswordHasher interface {
 	Hash(password string) (string, error)
 }
+
+// TokenCacheInvalidator lets Delete evict a blocked user's cached access state
+// so the block is effective immediately rather than after the cache TTL.
+type TokenCacheInvalidator interface {
+	Invalidate(userID uuid.UUID)
+}
 type Service struct {
-	repo      Repository
-	passwords PasswordHasher
-	audit     audit.Repository
+	repo       Repository
+	passwords  PasswordHasher
+	audit      audit.Repository
+	tokenCache TokenCacheInvalidator
 }
 
 func NewService(repo Repository, passwords PasswordHasher, audit audit.Repository) *Service {
 	return &Service{repo: repo, passwords: passwords, audit: audit}
 }
+
+// WithTokenCache wires the access-state cache so account blocks bust it at once.
+func (s *Service) WithTokenCache(c TokenCacheInvalidator) *Service { s.tokenCache = c; return s }
 
 type CreateUserInput struct {
 	Username   string            `json:"username"`
@@ -89,6 +99,9 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID, ip, ua string) error
 	}
 	// A blocked account must lose its live access tokens immediately.
 	_ = s.repo.InvalidateTokens(ctx, id)
+	if s.tokenCache != nil {
+		s.tokenCache.Invalidate(id)
+	}
 	_ = s.audit.Write(ctx, audit.Event{Action: "user_deleted", TargetType: "user", TargetID: id.String(), IP: ip, UserAgent: ua})
 	return nil
 }

@@ -111,15 +111,19 @@ func (r *PostgresRepository) InvalidateTokens(ctx context.Context, id uuid.UUID)
 	return err
 }
 
-// TokensInvalidBefore returns the cutoff before which access tokens are void,
-// or nil if the user has never invalidated them.
-func (r *PostgresRepository) TokensInvalidBefore(ctx context.Context, id uuid.UUID) (*time.Time, error) {
+// AccessState returns whether the account is still active and the cutoff before
+// which its first-party access tokens are void, in one lookup for BearerAuth.
+func (r *PostgresRepository) AccessState(ctx context.Context, id uuid.UUID) (bool, *time.Time, error) {
+	var status Status
 	var t *time.Time
-	err := r.pool.QueryRow(ctx, `SELECT tokens_invalid_before FROM users WHERE id=$1`, id).Scan(&t)
+	err := r.pool.QueryRow(ctx, `SELECT status, tokens_invalid_before FROM users WHERE id=$1`, id).Scan(&status, &t)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, storage.ErrNotFound
+		return false, nil, storage.ErrNotFound
 	}
-	return t, err
+	if err != nil {
+		return false, nil, err
+	}
+	return status == StatusActive, t, nil
 }
 
 // SetMFACounter persists the last accepted TOTP time-step to block replay.

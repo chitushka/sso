@@ -281,7 +281,9 @@ Deferred (no consumer yet): SAML 2.0, SCIM, token exchange.
 
 Run migration `000010_hardening` before starting v1.1.
 
-- **Revocable access tokens**: `users.tokens_invalid_before` is set on "sign out everywhere" (`DELETE /api/v1/auth/sessions`), password reset and account block/delete; `BearerAuth` rejects any access token issued at or before that moment (`token revoked`). Adds one indexed user lookup per authenticated request.
+- **Revocable access tokens**: `BearerAuth` checks the user's `status` + `tokens_invalid_before`, read through a short-TTL in-memory cache (`AccessCacheTTL`, 5s) so the check normally costs no DB round-trip. Block, "sign out everywhere" and password reset bust the cache entry explicitly, so all three are effective immediately; the TTL only bounds staleness for changes made directly in the database.
+  - **Blocked/deleted account** → every token is rejected (`account is not active`), including OAuth tokens held by external applications.
+  - **`tokens_invalid_before` cutoff** (set on "sign out everywhere" `DELETE /api/v1/auth/sessions` and password reset) → rejects **first-party** tokens (no `client_id`) issued at or before that moment (`token revoked`); external applications' OAuth tokens are exempt from the cutoff and keep their own lifetime/refresh, so a user signing out of the SSO does not knock third-party apps offline.
 - **TOTP replay protection**: the last accepted time-step is stored in `users.mfa_last_used_counter`; a code cannot be reused within its validity window.
 - **Federated login safety**: accounts are linked to an external identity only when the provider asserts a verified email (`email_verified`), and never auto-linked to an MFA-protected local account (manual linking required) — closes an account-takeover / MFA-bypass path.
 - **LDAP**: empty passwords are rejected before bind, closing the LDAP "unauthenticated bind" login bypass.
