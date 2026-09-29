@@ -124,7 +124,7 @@ async function toggleRole(userId, role, assigned) {
     <div class="row g-2">
       <div class="col-md-3"><input v-model="createForm.username" class="form-control" placeholder="username" required /></div>
       <div class="col-md-3"><input v-model="createForm.email" type="email" class="form-control" placeholder="email" required /></div>
-      <div class="col-md-3"><input v-model="createForm.password" type="password" class="form-control" placeholder="password (min 8)" required /></div>
+      <div class="col-md-3"><input v-model="createForm.password" type="password" class="form-control" placeholder="password (min 12)" minlength="12" maxlength="128" required /></div>
       <div class="col-md-2">
         <select v-model="createForm.status" class="form-select">
           <option>active</option>

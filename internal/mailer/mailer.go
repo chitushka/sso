@@ -3,11 +3,14 @@ package mailer
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"log/slog"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Mailer sends transactional mail (password reset, email verification).
@@ -26,22 +29,31 @@ type Config struct {
 
 func (c Config) Enabled() bool { return c.Host != "" && c.From != "" }
 
-// New returns an SMTP mailer when configured, otherwise a logger fallback
-// that writes the mail to the application log (dev mode).
+// New returns an SMTP mailer when configured, otherwise a disabled mailer that
+// logs only non-sensitive delivery metadata.
 func New(cfg Config, logger *slog.Logger) Mailer {
 	if cfg.Enabled() {
 		return &SMTPMailer{cfg: cfg}
 	}
-	return &LogMailer{logger: logger}
+	return &DisabledMailer{logger: logger}
 }
 
 type SMTPMailer struct{ cfg Config }
 
-func (m *SMTPMailer) Send(_ context.Context, to, subject, body string) error {
+func (m *SMTPMailer) Send(ctx context.Context, to, subject, body string) error {
 	addr := net.JoinHostPort(m.cfg.Host, strconv.Itoa(m.cfg.Port))
+	from, err := mail.ParseAddress(m.cfg.From)
+	if err != nil {
+		return errors.New("invalid SMTP sender address")
+	}
+	recipient, err := mail.ParseAddress(to)
+	if err != nil || recipient.Address != to || strings.ContainsAny(subject, "\r\n") {
+		return errors.New("invalid SMTP recipient or subject")
+	}
+
 	msg := strings.Join([]string{
-		"From: " + m.cfg.From,
-		"To: " + to,
+		"From: " + from.String(),
+		"To: " + recipient.String(),
 		"Subject: " + subject,
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=utf-8",
@@ -49,8 +61,13 @@ func (m *SMTPMailer) Send(_ context.Context, to, subject, body string) error {
 		body,
 	}, "\r\n")
 
-	conn, err := net.Dial("tcp", addr)
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
+		return err
+	}
+	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		_ = conn.Close()
 		return err
 	}
 	c, err := smtp.NewClient(conn, m.cfg.Host)
@@ -69,10 +86,10 @@ func (m *SMTPMailer) Send(_ context.Context, to, subject, body string) error {
 			return err
 		}
 	}
-	if err := c.Mail(m.cfg.From); err != nil {
+	if err := c.Mail(from.Address); err != nil {
 		return err
 	}
-	if err := c.Rcpt(to); err != nil {
+	if err := c.Rcpt(recipient.Address); err != nil {
 		return err
 	}
 	w, err := c.Data()
@@ -88,11 +105,11 @@ func (m *SMTPMailer) Send(_ context.Context, to, subject, body string) error {
 	return c.Quit()
 }
 
-// LogMailer is the dev fallback when SMTP is not configured: the message
-// (including reset/verification links) goes to the JSON log.
-type LogMailer struct{ logger *slog.Logger }
+// DisabledMailer is used in development when SMTP is not configured. Message
+// bodies are deliberately discarded because they contain recovery credentials.
+type DisabledMailer struct{ logger *slog.Logger }
 
-func (m *LogMailer) Send(_ context.Context, to, subject, body string) error {
-	m.logger.Info("smtp disabled, mail logged instead", "to", to, "subject", subject, "body", body)
-	return nil
+func (m *DisabledMailer) Send(_ context.Context, to, subject, _ string) error {
+	m.logger.Warn("smtp disabled, mail not sent", "to", to, "subject", subject)
+	return errors.New("smtp is not configured")
 }

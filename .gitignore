@@ -14,4 +14,3 @@ dist/
 # AI agents
 .claude/
 .codex/
-AGENTS.md

@@ -47,7 +47,6 @@ services:
       SSO_REFRESH_TOKEN_TTL: 720h
       SSO_CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:8080
       SSO_ISSUER: http://localhost:8080
-      SSO_OIDC_KEY_ROTATION_ENABLED: "false"
       SSO_LOG_LEVEL: info
       # Apply DB migrations automatically on start (convenient for compose; keep false in prod deploys with a separate migration step).
       SSO_MIGRATE_ON_START: "true"

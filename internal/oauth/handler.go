@@ -184,7 +184,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			oauthError(w, 400, "invalid_request", err.Error())
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+		http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: httpx.IsHTTPS(r), SameSite: http.SameSiteLaxMode})
 		if redirect != "" {
 			http.Redirect(w, r, redirect, http.StatusFound)
 			return

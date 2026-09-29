@@ -67,7 +67,9 @@ func (f *fakeUsersRepo) SetPasswordHash(ctx context.Context, id uuid.UUID, hash 
 }
 func (f *fakeUsersRepo) SetEmailVerified(context.Context, uuid.UUID, bool) error { return nil }
 func (f *fakeUsersRepo) SetMFA(context.Context, uuid.UUID, bool, string) error   { return nil }
-func (f *fakeUsersRepo) SetMFACounter(context.Context, uuid.UUID, int64) error   { return nil }
+func (f *fakeUsersRepo) ConsumeMFACounter(context.Context, uuid.UUID, int64) (bool, error) {
+	return true, nil
+}
 func (f *fakeUsersRepo) FindByEmail(ctx context.Context, email string) (users.User, error) {
 	for _, u := range f.items {
 		if u.Email == email {

@@ -26,14 +26,10 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDecryptLegacyPlaintextPassthrough(t *testing.T) {
+func TestDecryptRejectsPlaintext(t *testing.T) {
 	e := NewAESGCM("0123456789abcdef0123456789abcdef")
-	pt, err := e.Decrypt("legacy-plaintext")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pt != "legacy-plaintext" {
-		t.Fatalf("got %q", pt)
+	if _, err := e.Decrypt("plaintext"); err == nil {
+		t.Fatal("plaintext secret must be rejected")
 	}
 }
 

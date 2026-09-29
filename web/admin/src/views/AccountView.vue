@@ -193,8 +193,8 @@ async function disable() {
           <h5 class="card-title">Change password</h5>
           <form @submit.prevent="changePassword">
             <div class="mb-2"><input v-model="pwd.old_password" type="password" class="form-control form-control-sm" placeholder="current password" autocomplete="current-password" required /></div>
-            <div class="mb-2"><input v-model="pwd.new_password" type="password" class="form-control form-control-sm" placeholder="new password (min 8)" autocomplete="new-password" minlength="8" required /></div>
-            <div class="mb-2"><input v-model="pwd.confirm" type="password" class="form-control form-control-sm" placeholder="repeat new password" autocomplete="new-password" minlength="8" required /></div>
+            <div class="mb-2"><input v-model="pwd.new_password" type="password" class="form-control form-control-sm" placeholder="new password (min 12)" autocomplete="new-password" minlength="12" maxlength="128" required /></div>
+            <div class="mb-2"><input v-model="pwd.confirm" type="password" class="form-control form-control-sm" placeholder="repeat new password" autocomplete="new-password" minlength="12" maxlength="128" required /></div>
             <button class="btn btn-primary btn-sm">Change password</button>
           </form>
         </div>
@@ -213,7 +213,7 @@ async function disable() {
               <tr v-for="s in sessions" :key="s.id">
                 <td class="small text-muted">{{ new Date(s.created_at).toLocaleString() }}</td>
                 <td class="small">{{ s.ip }}</td>
-                <td class="small text-truncate" style="max-width: 220px">{{ s.user_agent }}</td>
+                <td class="small text-truncate session-user-agent">{{ s.user_agent }}</td>
                 <td class="text-end"><button class="btn btn-outline-danger btn-sm" @click="revokeSession(s.id)">Revoke</button></td>
               </tr>
             </tbody>
@@ -222,4 +222,10 @@ async function disable() {
       </div>
     </div>
   </div>
+
+<style scoped>
+.session-user-agent {
+  max-width: 220px;
+}
+</style>
 </template>

@@ -37,10 +37,16 @@ func (h *Argon2idHasher) Verify(password, encoded string) (bool, error) {
 	if len(parts) != 6 {
 		return false, fmt.Errorf("invalid hash")
 	}
+	if parts[1] != "argon2id" || parts[2] != "v=19" {
+		return false, fmt.Errorf("unsupported hash format")
+	}
 	var m, t uint32
 	var p uint8
 	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err != nil {
 		return false, err
+	}
+	if m < 8*1024 || m > 1024*1024 || t < 1 || t > 10 || p < 1 || p > 16 {
+		return false, fmt.Errorf("argon2 parameters are outside safe bounds")
 	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil {
@@ -49,6 +55,9 @@ func (h *Argon2idHasher) Verify(password, encoded string) (bool, error) {
 	key, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil {
 		return false, err
+	}
+	if len(salt) < 8 || len(salt) > 64 || len(key) < 16 || len(key) > 64 {
+		return false, fmt.Errorf("argon2 salt or key length is outside safe bounds")
 	}
 	other := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(key)))
 	return subtle.ConstantTimeCompare(key, other) == 1, nil

@@ -34,15 +34,14 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, beare
 			return
 		}
 		out := map[string]any{"sub": u.ID.String()}
-		// Claims are filtered by the token's scope; tokens without a scope claim
-		// (issued by the local login endpoint) keep the pre-v0.6.5 full response.
+		// UserInfo discloses claims only when the access token carries the
+		// corresponding OAuth scope.
 		scope := " " + claims.Scope + " "
-		full := claims.Scope == ""
-		if full || strings.Contains(scope, " profile ") {
+		if strings.Contains(scope, " profile ") {
 			out["preferred_username"] = u.Username
 			out["source"] = u.Source
 		}
-		if full || strings.Contains(scope, " email ") {
+		if strings.Contains(scope, " email ") {
 			out["email"] = u.Email
 		}
 		httpx.JSON(w, 200, out)

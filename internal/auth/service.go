@@ -59,7 +59,7 @@ type LoginResult struct {
 	User                 users.User `json:"user"`
 	AccessToken          string     `json:"access_token,omitempty"`
 	AccessTokenExpiresAt time.Time  `json:"access_token_expires_at"`
-	SessionToken         string     `json:"session_token,omitempty"`
+	SessionToken         string     `json:"-"`
 	SessionExpiresAt     time.Time  `json:"session_expires_at"`
 	MFARequired          bool       `json:"mfa_required,omitempty"`
 	MFAToken             string     `json:"mfa_token,omitempty"`

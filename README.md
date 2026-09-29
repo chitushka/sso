@@ -6,7 +6,7 @@ Single-tenant by design: this SSO serves exactly one company. Multi-tenancy (rea
 
 The binary serves plain HTTP and must run behind a TLS-terminating reverse proxy (nginx, traefik, Caddy) in production:
 
-- Terminate HTTPS at the proxy and forward to `:8080`. The `sso_session` cookie sets `Secure` only when the request arrived over TLS, so terminate TLS at the proxy and forward the original scheme, or run the proxy on the same host.
+- Terminate HTTPS at the proxy and forward to `:8080`. Configure `SSO_TRUSTED_PROXIES` and overwrite `X-Forwarded-Proto: https`; session cookies are then always emitted with `Secure`.
 - Set `SSO_TRUSTED_PROXIES` to the proxy's IP/CIDR. Only then is `X-Forwarded-For` honored for the client IP; from any other peer the header is ignored so a client cannot spoof its IP to evade per-IP brute-force lockout and rate limiting. Empty (default) = trust nobody, use the direct peer address.
 - Provide real `SSO_JWT_SECRET` and `SSO_ENCRYPTION_KEY` (each ≥32 chars, e.g. `openssl rand -base64 48`) via a `.env` file or the orchestrator's secret store — never the committed defaults.
 - `docker compose up` applies migrations automatically (`SSO_MIGRATE_ON_START=true`). For staged prod deploys keep it `false` and run migrations as a separate step.
@@ -55,9 +55,8 @@ Release 0.5.1 standardizes all application environment variables under the `SSO_
 | `SSO_REFRESH_TOKEN_TTL` | No | `720h` | OAuth2 refresh token lifetime. |
 | `SSO_CORS_ALLOWED_ORIGINS` | No | `http://localhost:3000,http://localhost:5173,http://localhost:8080` | Comma-separated CORS allowed origins. |
 | `SSO_ISSUER` | No | `http://localhost:8080` | OAuth2/OIDC issuer URL. |
-| `SSO_OIDC_KEY_ROTATION_ENABLED` | No | `false` | Enables background OIDC signing key rotation (new key every 30 days; the previous key stays in JWKS for 24h). |
 | `SSO_LOG_LEVEL` | No | `info` | JSON logger level: `debug`, `info`, `warn`, `error`. |
-| `SSO_SMTP_HOST` | No | `smtp.example.org` | SMTP server. When empty, reset/verification mails are written to the application log (dev mode). |
+| `SSO_SMTP_HOST` | Production | `smtp.example.org` | SMTP server. Production startup fails when SMTP is not configured; message bodies and recovery links are never logged. |
 | `SSO_SMTP_PORT` | No | `587` | SMTP port. |
 | `SSO_SMTP_USERNAME` / `SSO_SMTP_PASSWORD` | No | — | SMTP credentials (plain auth). |
 | `SSO_SMTP_FROM` | No | `sso@example.org` | Sender address; required to enable SMTP. |
@@ -183,8 +182,8 @@ Run migrations before testing v0.5.1.
 
 - The token endpoint now verifies the confidential client secret (Argon2id). Both `client_secret_post` and `client_secret_basic` are supported; invalid credentials return `401 invalid_client`.
 - Requested scopes are validated against the client's `allowed_scopes`; unknown scopes are rejected with `invalid_scope`.
-- LDAP bind passwords are encrypted at rest with AES-256-GCM using `SSO_ENCRYPTION_KEY` (new required variable). Rows written before 0.5.2 keep working and are re-encrypted on the next update.
-- `SSO_OIDC_KEY_ROTATION_ENABLED=true` activates background signing key rotation.
+- LDAP bind passwords, MFA seeds and broker client secrets are encrypted at rest with AES-256-GCM using `SSO_ENCRYPTION_KEY`. Unversioned plaintext values are rejected.
+- OIDC signing keys rotate automatically; the previous key remains in JWKS during the verification grace period.
 - Invalid duration/boolean configuration values now fail startup with a clear error instead of panicking.
 
 ## Release 0.6 - Security Hardening
@@ -210,7 +209,7 @@ Run migration `000007_oidc_completeness` before starting v0.6.5.
 - **Back-channel logout**: if the client has `backchannel_logout_uri`, a signed `logout_token` (RS256) is POSTed to it on logout.
 - **Consent**: `/oauth2/authorize` returns `403 consent_required` until the user grants the requested scopes. `GET /oauth2/consent` shows what is requested, `POST /oauth2/consent` grants it (scopes are merged with previous grants). Trusted first-party clients can set `skip_consent: true`.
 - **client_credentials grant**: service-to-service tokens for confidential clients; `sub` is the client's internal id, no refresh or ID token, scope validated against `allowed_scopes`.
-- **UserInfo scope filtering**: `profile` → `preferred_username`, `source`; `email` → `email`. Tokens without a scope claim keep the full response.
+- **UserInfo scope filtering**: `profile` → `preferred_username`, `source`; `email` → `email`. Tokens without a scope claim receive only `sub`.
 - New client fields: `post_logout_redirect_uris`, `backchannel_logout_uri`, `skip_consent` (create and update APIs). `GET /api/v1/oauth/clients/{id}` added.
 
 ## Release 0.7 - Admin UI
@@ -228,7 +227,7 @@ Pages: sign-in, dashboard, users (CRUD + role assignment), roles (CRUD + permiss
 Run migration `000008_accounts_mfa` before starting v0.8.
 
 **Password reset & email verification**
-- `POST /api/v1/auth/password/forgot` (`{login}`) — always returns 200 (no user enumeration); mails a one-hour reset link. Without SMTP the mail (with the link) goes to the server log.
+- `POST /api/v1/auth/password/forgot` (`{login}`) — always returns 200 (no user enumeration) and mails a one-hour reset link. Production requires SMTP; recovery links are never logged.
 - `POST /api/v1/auth/password/reset` (`{token, password}`) — sets the password, revokes all sessions and refresh tokens of the user.
 - `POST /api/v1/auth/email/request` (Bearer) / `POST /api/v1/auth/email/verify` (`{token}`) — 24-hour links; verifying activates `pending` accounts.
 - One-time tokens are stored hashed in `one_time_tokens`.
@@ -295,4 +294,4 @@ Run migration `000010_hardening` before starting v1.1.
 - **RP-initiated logout**: `id_token_hint` is bounded to 24h by `iat` so a leaked ID token cannot drive logout indefinitely.
 - **`X-Forwarded-For`**: the remaining `clientIP` helpers no longer read the header (RealIP already normalizes `RemoteAddr`), removing a latent spoofing regression.
 
-Still a documented trade-off (not in scope here): the in-memory rate limiter and lockout counters are per-instance, so horizontal scaling needs a shared store (Redis); example configs use `sslmode=disable` and placeholder secrets that must be replaced in production.
+The request-rate limiter is per instance; horizontally scaled deployments must also enforce a global limit at the trusted ingress. Login lockout state is shared in PostgreSQL. Production validation rejects `sslmode=disable`, placeholder/equal secrets, a non-HTTPS issuer, and missing SMTP.

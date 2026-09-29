@@ -3,6 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	stdmail "net/mail"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -53,8 +56,7 @@ type HTTPSecurityConfig struct {
 }
 
 type OIDCConfig struct {
-	Issuer             string
-	KeyRotationEnabled bool
+	Issuer string
 }
 
 type LoggingConfig struct {
@@ -96,8 +98,14 @@ func Load() (Config, error) {
 		return v
 	}
 
+	runtimeEnv := strings.ToLower(env("SSO_ENV", "local"))
+	defaultOrigins := ""
+	if isDevelopment(runtimeEnv) {
+		defaultOrigins = "http://localhost:5173,http://localhost:8080"
+	}
+
 	cfg := Config{
-		Env: env("SSO_ENV", "local"),
+		Env: runtimeEnv,
 		HTTP: HTTPConfig{
 			Address: env("SSO_HTTP_ADDR", ":8080"),
 		},
@@ -115,11 +123,10 @@ func Load() (Config, error) {
 			RefreshTTL: duration("SSO_REFRESH_TOKEN_TTL", 720*time.Hour),
 		},
 		CORS: CORSConfig{
-			AllowedOrigins: split(env("SSO_CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8080")),
+			AllowedOrigins: split(env("SSO_CORS_ALLOWED_ORIGINS", defaultOrigins)),
 		},
 		OIDC: OIDCConfig{
-			Issuer:             env("SSO_ISSUER", "http://localhost:8080"),
-			KeyRotationEnabled: boolean("SSO_OIDC_KEY_ROTATION_ENABLED", false),
+			Issuer: env("SSO_ISSUER", "http://localhost:8080"),
 		},
 		Logging: LoggingConfig{
 			Level: env("SSO_LOG_LEVEL", "info"),
@@ -150,8 +157,11 @@ func Load() (Config, error) {
 func (c Config) Validate() error {
 	var errs []error
 
+	databaseURL, databaseErr := url.Parse(c.Database.URL)
 	if strings.TrimSpace(c.Database.URL) == "" {
 		errs = append(errs, errors.New("SSO_DATABASE_URL is required"))
+	} else if databaseErr != nil || databaseURL.Host == "" || (databaseURL.Scheme != "postgres" && databaseURL.Scheme != "postgresql") {
+		errs = append(errs, errors.New("SSO_DATABASE_URL must be an absolute PostgreSQL URL"))
 	}
 	if strings.TrimSpace(c.Security.JWTSecret) == "" {
 		errs = append(errs, errors.New("SSO_JWT_SECRET is required"))
@@ -178,7 +188,75 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("SSO_REFRESH_TOKEN_TTL must be positive"))
 	}
 
+	if c.Security.JWTSecret != "" && c.Security.JWTSecret == c.Security.EncryptionKey {
+		errs = append(errs, errors.New("SSO_JWT_SECRET and SSO_ENCRYPTION_KEY must be different"))
+	}
+
+	production := !isDevelopment(c.Env)
+	issuer, issuerErr := url.Parse(c.OIDC.Issuer)
+	if issuerErr != nil || !issuer.IsAbs() || issuer.Host == "" || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" {
+		errs = append(errs, errors.New("SSO_ISSUER must be an absolute HTTP(S) URL without user info, query or fragment"))
+	} else if issuer.Scheme != "http" && issuer.Scheme != "https" {
+		errs = append(errs, errors.New("SSO_ISSUER must use http or https"))
+	} else if production && issuer.Scheme != "https" {
+		errs = append(errs, errors.New("SSO_ISSUER must use https outside development"))
+	}
+
+	if production {
+		if strings.Contains(strings.ToLower(c.Security.JWTSecret), "change-me") || strings.Contains(strings.ToLower(c.Security.EncryptionKey), "change-me") {
+			errs = append(errs, errors.New("placeholder secrets are forbidden outside development"))
+		}
+		if databaseErr == nil && strings.EqualFold(databaseURL.Query().Get("sslmode"), "disable") {
+			errs = append(errs, errors.New("PostgreSQL sslmode=disable is forbidden outside development"))
+		}
+	}
+
+	for _, origin := range c.CORS.AllowedOrigins {
+		u, err := url.Parse(origin)
+		if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			errs = append(errs, fmt.Errorf("invalid CORS origin %q", origin))
+		}
+	}
+	for _, proxy := range c.HTTPSecurity.TrustedProxies {
+		if net.ParseIP(proxy) == nil {
+			if _, _, err := net.ParseCIDR(proxy); err != nil {
+				errs = append(errs, fmt.Errorf("invalid trusted proxy %q", proxy))
+			}
+		}
+	}
+
+	smtpConfigured := c.SMTP.Host != "" || c.SMTP.From != "" || c.SMTP.Username != "" || c.SMTP.Password != ""
+	if production && !smtpConfigured {
+		errs = append(errs, errors.New("SMTP is required outside development"))
+	}
+	if smtpConfigured {
+		if c.SMTP.Host == "" || c.SMTP.From == "" {
+			errs = append(errs, errors.New("SSO_SMTP_HOST and SSO_SMTP_FROM are required together"))
+		}
+		if _, err := stdmail.ParseAddress(c.SMTP.From); c.SMTP.From != "" && err != nil {
+			errs = append(errs, errors.New("SSO_SMTP_FROM must be a valid email address"))
+		}
+		if (c.SMTP.Username == "") != (c.SMTP.Password == "") {
+			errs = append(errs, errors.New("SSO_SMTP_USERNAME and SSO_SMTP_PASSWORD are required together"))
+		}
+		if c.SMTP.Username != "" && !c.SMTP.StartTLS {
+			errs = append(errs, errors.New("SMTP authentication requires STARTTLS"))
+		}
+	}
+	if c.SMTP.Port < 1 || c.SMTP.Port > 65535 {
+		errs = append(errs, errors.New("SSO_SMTP_PORT must be between 1 and 65535"))
+	}
+
 	return errors.Join(errs...)
+}
+
+func isDevelopment(environment string) bool {
+	switch strings.ToLower(strings.TrimSpace(environment)) {
+	case "local", "development", "dev", "test":
+		return true
+	default:
+		return false
+	}
 }
 
 func env(key string, defaultValue string) string {

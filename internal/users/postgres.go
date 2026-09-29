@@ -57,7 +57,7 @@ func (r *PostgresRepository) FindByUsername(ctx context.Context, username string
 	return scanUser(r.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE username=$1`, username))
 }
 func (r *PostgresRepository) FindByEmail(ctx context.Context, email string) (User, error) {
-	return scanUser(r.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE email=$1 ORDER BY created_at ASC LIMIT 1`, email))
+	return scanUser(r.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE lower(email)=lower($1) AND status <> 'deleted' ORDER BY created_at ASC LIMIT 1`, email))
 }
 func (r *PostgresRepository) List(ctx context.Context, limit, offset int) ([]User, error) {
 	rows, err := r.pool.Query(ctx, `SELECT `+userCols+` FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
@@ -126,10 +126,10 @@ func (r *PostgresRepository) AccessState(ctx context.Context, id uuid.UUID) (boo
 	return status == StatusActive, t, nil
 }
 
-// SetMFACounter persists the last accepted TOTP time-step to block replay.
-func (r *PostgresRepository) SetMFACounter(ctx context.Context, id uuid.UUID, counter int64) error {
-	_, err := r.pool.Exec(ctx, `UPDATE users SET mfa_last_used_counter=$2 WHERE id=$1`, id, counter)
-	return err
+// ConsumeMFACounter atomically spends a TOTP time-step to prevent concurrent replay.
+func (r *PostgresRepository) ConsumeMFACounter(ctx context.Context, id uuid.UUID, counter int64) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `UPDATE users SET mfa_last_used_counter=$2 WHERE id=$1 AND mfa_last_used_counter < $2`, id, counter)
+	return err == nil && tag.RowsAffected() == 1, err
 }
 func (r *PostgresRepository) Count(ctx context.Context) (int64, error) {
 	var c int64

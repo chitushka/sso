@@ -100,22 +100,29 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword, ip, 
 	if err := s.users.SetPasswordHash(ctx, userID, hash); err != nil {
 		return err
 	}
-	// A reset means the old credentials may be compromised: cut every session,
-	// refresh token and already-issued access token.
-	_ = s.sessions.RevokeAllByUser(ctx, userID)
-	if s.refresh != nil {
-		_ = s.refresh.RevokeRefreshTokensByUser(ctx, userID)
-	}
-	_ = s.users.InvalidateTokens(ctx, userID)
-	if s.tokenCache != nil {
-		s.tokenCache.Invalidate(userID)
+	if err := s.revokeCredentials(ctx, userID); err != nil {
+		return err
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "password_reset_completed", TargetType: "user", TargetID: userID.String(), IP: ip, UserAgent: ua})
 	return nil
 }
 
-// ChangePassword is the self-service flow: requires the current password,
-// keeps the current session but revokes the others.
+func (s *Service) revokeCredentials(ctx context.Context, userID uuid.UUID) error {
+	errs := []error{
+		s.sessions.RevokeAllByUser(ctx, userID),
+		s.users.InvalidateTokens(ctx, userID),
+	}
+	if s.refresh != nil {
+		errs = append(errs, s.refresh.RevokeRefreshTokensByUser(ctx, userID))
+	}
+	if s.tokenCache != nil {
+		s.tokenCache.Invalidate(userID)
+	}
+	return errors.Join(errs...)
+}
+
+// ChangePassword requires the current password and revokes every existing
+// credential after the new password is stored.
 func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassword, newPassword string) error {
 	if err := users.ValidatePassword(newPassword); err != nil {
 		return err
@@ -136,6 +143,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassw
 		return err
 	}
 	if err := s.users.SetPasswordHash(ctx, userID, hash); err != nil {
+		return err
+	}
+	if err := s.revokeCredentials(ctx, userID); err != nil {
 		return err
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "password_changed", TargetType: "user", TargetID: userID.String()})
@@ -268,12 +278,11 @@ func (s *Service) VerifyCode(ctx context.Context, u users.User, code string) (bo
 		secret, err := s.encryptor.Decrypt(u.MFASecret)
 		if err == nil {
 			if ok, counter := mfa.VerifyWithCounter(secret, code, time.Now()); ok {
-				// Reject replay: a time-step may be spent at most once.
-				if int64(counter) <= u.MFALastUsedCounter {
-					return false, nil
+				consumed, err := s.users.ConsumeMFACounter(ctx, u.ID, int64(counter))
+				if err != nil {
+					return false, err
 				}
-				_ = s.users.SetMFACounter(ctx, u.ID, int64(counter))
-				return true, nil
+				return consumed, nil
 			}
 		}
 	}

@@ -41,9 +41,14 @@ type KeyStore interface {
 type Service struct {
 	issuer string
 	keys   KeyStore
+	client *http.Client
 }
 
-func NewService(issuer string, keys KeyStore) *Service { return &Service{issuer: issuer, keys: keys} }
+func NewService(issuer string, keys KeyStore) *Service {
+	client := &http.Client{Timeout: 10 * time.Second}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &Service{issuer: issuer, keys: keys, client: client}
+}
 
 // Rotation policy: a new active key is generated once the current one exceeds
 // keyMaxAge; the old key stays in JWKS as "retiring" for retireGrace so
@@ -117,6 +122,9 @@ func (s *Service) IssueIDToken(ctx context.Context, u users.User, clientID, nonc
 		return "", err
 	}
 	block, _ := pem.Decode([]byte(k.PrivateKeyPEM))
+	if block == nil {
+		return "", errors.New("invalid OIDC private key")
+	}
 	priv, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
 		return "", err
@@ -144,6 +152,9 @@ func (s *Service) VerifyIDToken(ctx context.Context, raw string) (string, string
 		for _, k := range keys {
 			if k.Kid == kid {
 				block, _ := pem.Decode([]byte(k.PublicKeyPEM))
+				if block == nil {
+					return nil, errors.New("invalid OIDC public key")
+				}
 				return x509.ParsePKCS1PublicKey(block.Bytes)
 			}
 		}
@@ -178,6 +189,9 @@ func (s *Service) IssueLogoutToken(ctx context.Context, sub, clientID string) (s
 		return "", err
 	}
 	block, _ := pem.Decode([]byte(k.PrivateKeyPEM))
+	if block == nil {
+		return "", errors.New("invalid OIDC private key")
+	}
 	priv, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
 		return "", err
@@ -210,12 +224,12 @@ func (s *Service) SendBackchannelLogout(ctx context.Context, sub, clientID, uri 
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return errors.New("backchannel logout rejected: " + resp.Status)
 	}
 	return nil
@@ -241,6 +255,9 @@ func (s *Service) JWKS(ctx context.Context) (map[string]any, error) {
 }
 func jwkFromRSA(k SigningKey) (map[string]any, error) {
 	block, _ := pem.Decode([]byte(k.PublicKeyPEM))
+	if block == nil {
+		return nil, errors.New("invalid OIDC public key")
+	}
 	pub, err := x509.ParsePKCS1PublicKey(block.Bytes)
 	if err != nil {
 		return nil, err

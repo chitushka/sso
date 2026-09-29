@@ -73,12 +73,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	oauthRepo := oauth.NewPostgresRepository(pool, passwords)
 	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, tokens, auditRepo, passwords).WithTokenVerifier(tokens).WithRefreshTTL(cfg.Token.RefreshTTL)
 	accountSvc.WithRefreshRevoker(oauthRepo).WithTokenCache(accessCache)
-	oidcKeys := oidc.NewPostgresKeyStore(pool)
+	oidcKeys := oidc.NewPostgresKeyStore(pool, encryptor)
 	oidcSvc := oidc.NewService(cfg.OIDC.Issuer, oidcKeys)
-	_ = oidcSvc.EnsureActiveKey(ctx)
-	if cfg.OIDC.KeyRotationEnabled {
-		oidcSvc.StartRotation(ctx, logger)
+	if err := oidcSvc.EnsureActiveKey(ctx); err != nil {
+		return nil, err
 	}
+	oidcSvc.StartRotation(ctx, logger)
 	oauthSvc.WithIDTokenIssuer(oidcSvc).WithIDTokenVerifier(oidcSvc).WithBackchannel(oidcSvc)
 	metrics := middleware.NewMetrics()
 	r := chi.NewRouter()
@@ -86,6 +86,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	r.Use(middleware.RealIP(cfg.HTTPSecurity.TrustedProxies))
 	r.Use(metrics.Handler)
 	r.Use(middleware.Recoverer(logger))
+	r.Use(middleware.SecurityHeaders)
 	r.Use(middleware.Logger(logger))
 	r.Use(cors.Handler(cors.Options{AllowedOrigins: cfg.CORS.AllowedOrigins, AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}, AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"}, AllowCredentials: true, MaxAge: 300}))
 	r.Use(middleware.BodyLimit(1 << 20)) // 1 MiB cap on request bodies

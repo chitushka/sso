@@ -45,11 +45,11 @@ func (e *AESGCM) Encrypt(plaintext string) (string, error) {
 	return prefix + base64.RawStdEncoding.EncodeToString(sealed), nil
 }
 
-// Decrypt returns values without the enc:v1: prefix unchanged, so rows written
-// before encryption was introduced keep working and are re-encrypted on next update.
+// Decrypt accepts only versioned ciphertext. Plaintext compatibility would
+// silently turn corrupted or legacy database values into live credentials.
 func (e *AESGCM) Decrypt(stored string) (string, error) {
 	if !strings.HasPrefix(stored, prefix) {
-		return stored, nil
+		return "", errors.New("secret is not encrypted")
 	}
 	raw, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(stored, prefix))
 	if err != nil {

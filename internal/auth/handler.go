@@ -37,7 +37,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 				httpx.Error(w, 500, "login failed")
 				return
 			}
-			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: res.SessionToken, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, Expires: res.SessionExpiresAt})
+			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: res.SessionToken, Path: "/", HttpOnly: true, Secure: httpx.IsHTTPS(r), SameSite: http.SameSiteLaxMode, Expires: res.SessionExpiresAt})
 			httpx.JSON(w, 200, res)
 		})
 		r.Post("/logout", func(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +45,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 			if c != nil {
 				_ = svc.Logout(r.Context(), c.Value)
 			}
-			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: httpx.IsHTTPS(r), SameSite: http.SameSiteLaxMode})
 			httpx.JSON(w, 200, map[string]string{"status": "logged_out"})
 		})
 		r.With(BearerAuth(jwtSecret, revocations)).Get("/sessions", func(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +101,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 			if inv, ok := revocations.(TokenCacheInvalidator); ok {
 				inv.Invalidate(userID)
 			}
-			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: httpx.IsHTTPS(r), SameSite: http.SameSiteLaxMode})
 			httpx.JSON(w, 200, map[string]string{"status": "all_revoked"})
 		})
 		r.With(BearerAuth(jwtSecret, revocations)).Get("/me", func(w http.ResponseWriter, r *http.Request) {

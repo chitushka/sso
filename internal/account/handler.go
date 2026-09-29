@@ -181,7 +181,7 @@ func RegisterRoutes(r chi.Router, svc *Service, authSvc *auth.Service, bearerAut
 				}
 				return
 			}
-			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: res.SessionToken, Path: "/", HttpOnly: true, Secure: req.TLS != nil, SameSite: http.SameSiteLaxMode, Expires: res.SessionExpiresAt})
+			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: res.SessionToken, Path: "/", HttpOnly: true, Secure: httpx.IsHTTPS(req), SameSite: http.SameSiteLaxMode, Expires: res.SessionExpiresAt})
 			httpx.JSON(w, 200, res)
 		})
 	})

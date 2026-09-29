@@ -28,10 +28,12 @@ func (m *memUsers) Update(_ context.Context, u users.User) (users.User, error)  
 func (m *memUsers) SetPasswordHash(_ context.Context, _ uuid.UUID, _ string) error { return nil }
 func (m *memUsers) SetEmailVerified(_ context.Context, _ uuid.UUID, _ bool) error  { return nil }
 func (m *memUsers) SetMFA(_ context.Context, _ uuid.UUID, _ bool, _ string) error  { return nil }
-func (m *memUsers) SetMFACounter(_ context.Context, _ uuid.UUID, _ int64) error    { return nil }
-func (m *memUsers) FindByEmail(_ context.Context, _ string) (users.User, error)    { return m.u, nil }
-func (m *memUsers) TouchLastLogin(_ context.Context, _ uuid.UUID) error            { return nil }
-func (m *memUsers) InvalidateTokens(_ context.Context, _ uuid.UUID) error          { return nil }
+func (m *memUsers) ConsumeMFACounter(_ context.Context, _ uuid.UUID, _ int64) (bool, error) {
+	return true, nil
+}
+func (m *memUsers) FindByEmail(_ context.Context, _ string) (users.User, error) { return m.u, nil }
+func (m *memUsers) TouchLastLogin(_ context.Context, _ uuid.UUID) error         { return nil }
+func (m *memUsers) InvalidateTokens(_ context.Context, _ uuid.UUID) error       { return nil }
 func (m *memUsers) AccessState(_ context.Context, _ uuid.UUID) (bool, *time.Time, error) {
 	return true, nil, nil
 }

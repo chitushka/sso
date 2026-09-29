@@ -43,7 +43,7 @@ Scope:
 - verify confidential client secret at the token endpoint (`client_secret_basic` and `client_secret_post`)
 - enforce requested scope against client `allowed_scopes`
 - encrypt LDAP bind passwords at rest (AES-256-GCM, `SSO_ENCRYPTION_KEY`)
-- background OIDC signing key rotation behind `SSO_OIDC_KEY_ROTATION_ENABLED`
+- automatic background OIDC signing key rotation
 - configuration parse errors are returned instead of panicking
 
 ## v0.6 — Security Hardening
@@ -93,7 +93,7 @@ Scope:
 Status: done.
 
 Scope:
-- SMTP mailer (`SSO_SMTP_*`) with log fallback for development
+- SMTP mailer (`SSO_SMTP_*`) with no secret-bearing log fallback
 - password reset (hashed one-time tokens, session + refresh token revocation)
 - email verification (activates pending accounts)
 - TOTP MFA (RFC 6238, AES-GCM-encrypted secrets, recovery codes, two-step login with a dedicated mfa_token)

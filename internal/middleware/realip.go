@@ -18,12 +18,19 @@ func RealIP(trustedProxies []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			peer := hostOnly(r.RemoteAddr)
-			if xff := r.Header.Get("X-Forwarded-For"); xff != "" && ipInAny(peer, nets) {
+			trustedPeer := ipInAny(peer, nets)
+			if xff := r.Header.Get("X-Forwarded-For"); xff != "" && trustedPeer {
 				if client := rightmostUntrusted(xff, nets); client != "" {
 					r.RemoteAddr = net.JoinHostPort(client, "0")
 				}
 			}
+			if trustedPeer {
+				if proto := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))); proto == "https" || proto == "http" {
+					r.URL.Scheme = proto
+				}
+			}
 			r.Header.Del("X-Forwarded-For")
+			r.Header.Del("X-Forwarded-Proto")
 			next.ServeHTTP(w, r)
 		})
 	}

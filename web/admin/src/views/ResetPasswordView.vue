@@ -38,11 +38,11 @@ async function submit() {
           <form @submit.prevent="submit">
             <div class="mb-3">
               <label class="form-label">New password</label>
-              <input v-model="password" type="password" class="form-control" minlength="8" required autofocus />
+              <input v-model="password" type="password" class="form-control" minlength="12" maxlength="128" required autofocus />
             </div>
             <div class="mb-3">
               <label class="form-label">Repeat password</label>
-              <input v-model="confirm" type="password" class="form-control" minlength="8" required />
+              <input v-model="confirm" type="password" class="form-control" minlength="12" maxlength="128" required />
             </div>
             <button class="btn btn-primary w-100" :disabled="busy">Save password</button>
           </form>

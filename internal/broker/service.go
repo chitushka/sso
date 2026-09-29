@@ -40,7 +40,9 @@ type Service struct {
 }
 
 func NewService(repo Repository, usersRepo users.Repository, authSvc *auth.Service, aud audit.Repository, issuer string, stateSecret []byte) *Service {
-	return &Service{repo: repo, users: usersRepo, auth: authSvc, audit: aud, issuer: issuer, stateSecret: stateSecret, client: &http.Client{Timeout: 10 * time.Second}}
+	client := &http.Client{Timeout: 10 * time.Second}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &Service{repo: repo, users: usersRepo, auth: authSvc, audit: aud, issuer: issuer, stateSecret: stateSecret, client: client}
 }
 
 func (s *Service) List(ctx context.Context) ([]Provider, error) { return s.repo.List(ctx) }
@@ -72,6 +74,9 @@ func (s *Service) Create(ctx context.Context, p Provider) (Provider, error) {
 	if p.AuthorizeURL == "" || p.TokenURL == "" || p.UserinfoURL == "" {
 		return Provider{}, errors.New("authorize_url, token_url and userinfo_url are required for type oidc")
 	}
+	if err := validateProvider(p); err != nil {
+		return Provider{}, err
+	}
 	out, err := s.repo.Create(ctx, p)
 	if err == nil {
 		_ = s.audit.Write(ctx, audit.Event{Action: "identity_provider_created", TargetType: "identity_provider", TargetID: out.ID.String()})
@@ -81,6 +86,9 @@ func (s *Service) Create(ctx context.Context, p Provider) (Provider, error) {
 
 func (s *Service) Update(ctx context.Context, p Provider) (Provider, error) {
 	p = applyPreset(p)
+	if err := validateProvider(p); err != nil {
+		return Provider{}, err
+	}
 	out, err := s.repo.Update(ctx, p)
 	if err == nil {
 		_ = s.audit.Write(ctx, audit.Event{Action: "identity_provider_updated", TargetType: "identity_provider", TargetID: out.ID.String()})
@@ -94,6 +102,28 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 		_ = s.audit.Write(ctx, audit.Event{Action: "identity_provider_deleted", TargetType: "identity_provider", TargetID: id.String()})
 	}
 	return err
+}
+
+func validateProvider(p Provider) error {
+	switch p.Type {
+	case "google", "github", "oidc":
+	default:
+		return fmt.Errorf("unsupported identity provider type %q", p.Type)
+	}
+	if strings.TrimSpace(p.Name) == "" || strings.TrimSpace(p.ClientID) == "" {
+		return errors.New("name and client_id are required")
+	}
+	for field, raw := range map[string]string{
+		"authorize_url": p.AuthorizeURL,
+		"token_url":     p.TokenURL,
+		"userinfo_url":  p.UserinfoURL,
+	} {
+		u, err := url.Parse(raw)
+		if err != nil || !u.IsAbs() || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
+			return fmt.Errorf("%s must be an absolute HTTPS URL without credentials or fragments", field)
+		}
+	}
+	return nil
 }
 
 func (s *Service) callbackURL(code string) string {
@@ -187,6 +217,9 @@ func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (e
 	if err != nil {
 		return externalIdentity{}, err
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return externalIdentity{}, fmt.Errorf("token exchange failed: %s", resp.Status)
+	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var tok struct {
@@ -204,6 +237,9 @@ func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (e
 	uresp, err := s.client.Do(ureq)
 	if err != nil {
 		return externalIdentity{}, err
+	}
+	if uresp.StatusCode < 200 || uresp.StatusCode >= 300 {
+		return externalIdentity{}, fmt.Errorf("userinfo request failed: %s", uresp.Status)
 	}
 	defer func() { _ = uresp.Body.Close() }()
 	ubody, _ := io.ReadAll(io.LimitReader(uresp.Body, 1<<20))

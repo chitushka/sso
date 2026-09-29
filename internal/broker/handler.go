@@ -26,7 +26,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 
 	r.Get("/oauth2/broker/{code}/login", func(w http.ResponseWriter, req *http.Request) {
 		cont := req.URL.Query().Get("continue")
-		if !strings.HasPrefix(cont, "/") {
+		if !safeContinue(cont) {
 			cont = "/" // only same-origin continue targets
 		}
 		redirect, err := svc.Start(req.Context(), chi.URLParam(req, "code"), cont)
@@ -51,8 +51,8 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			http.Redirect(w, req, "/login?broker_error=failed", http.StatusFound)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: res.SessionToken, Path: "/", HttpOnly: true, Secure: req.TLS != nil, SameSite: http.SameSiteLaxMode, Expires: res.SessionExpiresAt})
-		if cont == "" || !strings.HasPrefix(cont, "/") {
+		http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: res.SessionToken, Path: "/", HttpOnly: true, Secure: httpx.IsHTTPS(req), SameSite: http.SameSiteLaxMode, Expires: res.SessionExpiresAt})
+		if !safeContinue(cont) {
 			cont = "/"
 		}
 		// The SPA picks the access token up from the fragment (not sent to servers or logs).
@@ -108,6 +108,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 					httpx.Error(w, 404, "provider not found")
 					return
 				}
+
 				httpx.Error(w, 400, err.Error())
 				return
 			}
@@ -131,6 +132,13 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			httpx.JSON(w, 200, map[string]string{"status": "deleted"})
 		})
 	})
+}
+
+func safeContinue(target string) bool {
+	return strings.HasPrefix(target, "/") &&
+		!strings.HasPrefix(target, "//") &&
+		!strings.HasPrefix(target, `/\`) &&
+		!strings.ContainsAny(target, "\r\n")
 }
 
 // clientIP returns the peer address; RealIP has already folded any trusted

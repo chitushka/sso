@@ -25,7 +25,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	ctx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
 	a, err := app.New(ctx, cfg, logger, version)
 	if err != nil {
 		logger.Error("init app", "error", err)
@@ -33,7 +34,15 @@ func main() {
 	}
 	defer a.Close()
 
-	srv := &http.Server{Addr: cfg.HTTP.Address, Handler: a.Router(), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{
+		Addr:              cfg.HTTP.Address,
+		Handler:           a.Router(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 	go func() {
 		logger.Info("sso api started", "addr", cfg.HTTP.Address, "env", cfg.Env)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -41,9 +50,8 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+	<-ctx.Done()
+	stopSignals()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)

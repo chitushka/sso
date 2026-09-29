@@ -101,7 +101,7 @@ func doJSON(t *testing.T, method, path, bearer string, body any, out any) *http.
 
 type loginResult struct {
 	AccessToken  string `json:"access_token"`
-	SessionToken string `json:"session_token"`
+	SessionToken string `json:"-"`
 	User         struct {
 		ID string `json:"id"`
 	} `json:"user"`
@@ -127,8 +127,17 @@ func TestEndToEnd(t *testing.T) {
 
 	// 3. Login as admin.
 	var admin loginResult
-	if resp := doJSON(t, "POST", "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "SuperSecret123!"}, &admin); resp.StatusCode != 200 || admin.AccessToken == "" || admin.SessionToken == "" {
+	if resp := doJSON(t, "POST", "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "SuperSecret123!"}, &admin); resp.StatusCode != 200 || admin.AccessToken == "" {
 		t.Fatalf("login failed: %d %+v", resp.StatusCode, admin)
+	} else {
+		for _, cookie := range resp.Cookies() {
+			if cookie.Name == "sso_session" {
+				admin.SessionToken = cookie.Value
+			}
+		}
+		if admin.SessionToken == "" {
+			t.Fatal("login did not set the session cookie")
+		}
 	}
 	if resp := doJSON(t, "POST", "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "wrong"}, nil); resp.StatusCode != 401 {
 		t.Fatalf("wrong password must 401, got %d", resp.StatusCode)
