@@ -1,0 +1,50 @@
+name: sso-production
+
+services:
+  api:
+    image: ${SSO_IMAGE:?Set SSO_IMAGE to an immutable image tag or digest}
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      SSO_ENV: production
+      SSO_HTTP_ADDR: :8080
+      SSO_DATABASE_URL: ${SSO_DATABASE_URL:?Set a PostgreSQL URL with sslmode=require, verify-ca, or verify-full}
+      SSO_JWT_SECRET: ${SSO_JWT_SECRET:?Set a random secret of at least 32 characters}
+      SSO_ENCRYPTION_KEY: ${SSO_ENCRYPTION_KEY:?Set an independent random key of at least 32 characters}
+      SSO_ACCESS_TOKEN_TTL: ${SSO_ACCESS_TOKEN_TTL:-15m}
+      SSO_SESSION_TTL: ${SSO_SESSION_TTL:-720h}
+      SSO_REFRESH_TOKEN_TTL: ${SSO_REFRESH_TOKEN_TTL:-720h}
+      SSO_CORS_ALLOWED_ORIGINS: ${SSO_CORS_ALLOWED_ORIGINS:?Set the HTTPS admin UI origin}
+      SSO_ISSUER: ${SSO_ISSUER:?Set the public HTTPS issuer}
+      SSO_LOG_LEVEL: ${SSO_LOG_LEVEL:-info}
+      SSO_MIGRATE_ON_START: ${SSO_MIGRATE_ON_START:-false}
+      SSO_TRUSTED_PROXIES: ${SSO_TRUSTED_PROXIES:?Set the ingress proxy IP or CIDR}
+      SSO_SMTP_HOST: ${SSO_SMTP_HOST:?Set the SMTP host}
+      SSO_SMTP_PORT: ${SSO_SMTP_PORT:-587}
+      SSO_SMTP_USERNAME: ${SSO_SMTP_USERNAME:-}
+      SSO_SMTP_PASSWORD: ${SSO_SMTP_PASSWORD:-}
+      SSO_SMTP_FROM: ${SSO_SMTP_FROM:?Set the sender address}
+      SSO_SMTP_STARTTLS: "true"
+    expose:
+      - "8080"
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health/live"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+networks:
+  edge:
+    external: true
+    name: ${SSO_EDGE_NETWORK:?Set the pre-created private ingress network}

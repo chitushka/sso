@@ -10,6 +10,9 @@ The binary serves plain HTTP and must run behind a TLS-terminating reverse proxy
 - Set `SSO_TRUSTED_PROXIES` to the proxy's IP/CIDR. Only then is `X-Forwarded-For` honored for the client IP; from any other peer the header is ignored so a client cannot spoof its IP to evade per-IP brute-force lockout and rate limiting. Empty (default) = trust nobody, use the direct peer address.
 - Provide real `SSO_JWT_SECRET` and `SSO_ENCRYPTION_KEY` (each ≥32 chars, e.g. `openssl rand -base64 48`) via a `.env` file or the orchestrator's secret store — never the committed defaults.
 - `docker compose up` applies migrations automatically (`SSO_MIGRATE_ON_START=true`). For staged prod deploys keep it `false` and run migrations as a separate step.
+- `docker-compose.yml` is local-development-only. It publishes PostgreSQL and LDAP and uses disposable credentials.
+- `docker-compose.prod.yml` runs only the hardened application container: read-only root filesystem, all Linux capabilities dropped, no host ports, and a pre-created private ingress network.
+- Production uses externally managed PostgreSQL with `sslmode=require`, `verify-ca`, or preferably `verify-full`. Configure external LDAP providers with LDAPS or StartTLS.
 
 Operational endpoints: `GET /health/live`, `GET /health/ready` (checks the DB), `GET /health/version`, `GET /metrics` (Prometheus text format).
 
@@ -35,6 +38,15 @@ docker compose build
 docker compose up
 ```
 
+Production:
+
+```bash
+cp .env.production.example .env.production
+# Fill every required value and replace SSO_IMAGE with an immutable digest.
+docker network create production-edge
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+```
+
 Run migrations manually with your preferred migration tool. Migration files are in `migrations/`.
 
 ## Configuration
@@ -45,7 +57,7 @@ Release 0.5.1 standardizes all application environment variables under the `SSO_
 | --- | --- | --- | --- |
 | `SSO_ENV` | No | `local` | Runtime environment name. |
 | `SSO_HTTP_ADDR` | No | `:8080` | HTTP listen address. |
-| `SSO_DATABASE_URL` | Yes | `postgres://sso:sso@postgres:5432/sso?sslmode=disable` | PostgreSQL connection string. Use `postgres` as host inside Docker Compose. |
+| `SSO_DATABASE_URL` | Yes | `postgres://sso@db.example.org:5432/sso?sslmode=verify-full` | PostgreSQL connection string. Production requires explicit TLS. |
 | `SSO_MIGRATE_ON_START` | No | `false` | Apply embedded DB migrations on startup. |
 | `SSO_TRUSTED_PROXIES` | No | — | Comma-separated CIDRs/IPs of reverse proxies allowed to set `X-Forwarded-For`. Empty = trust none. |
 | `SSO_JWT_SECRET` | Yes | `change-me-please-change-me-please-change-me` | JWT signing secret. Must be at least 32 characters. |
@@ -219,8 +231,8 @@ Vue 3 + Vite + Bootstrap 5 + Pinia + Vue Router + Axios (JavaScript) SPA in `web
 Pages: sign-in, dashboard, users (CRUD + role assignment), roles (CRUD + permission assignment), OAuth clients (CRUD, one-time secret display), LDAP providers (CRUD + connection test), audit log (filters), and the OAuth consent screen (`/consent?client_id=...&scope=...&continue=<authorize URL>`).
 
 - **Production**: `docker compose build` compiles the UI in a Node stage and the Go binary serves it from `web/admin/dist` on the same port (8080). Any unknown GET path falls back to `index.html` (SPA routing). If `web/admin/dist` is absent, the server runs API-only.
-- **Development**: run the API locally, then `cd web/admin && npm install && npm run dev` — Vite serves the UI on :5173 and proxies `/api`, `/oauth2`, `/.well-known` and `/health` to :8080 (cookies flow same-origin, no CORS needed).
-- Auth: the UI logs in via `POST /api/v1/auth/login`, stores the Bearer token and relies on the `sso_session` cookie for the OAuth authorize/consent/logout flows. On 401 it redirects to `/login?continue=...`.
+- **Development**: run the API locally, then `cd web/admin && npm ci && npm run dev` — Vite serves the UI on :5173 and proxies `/api`, `/oauth2`, `/.well-known` and `/health` to :8080 (cookies flow same-origin, no CORS needed).
+- Auth: the UI uses an opaque HttpOnly session cookie plus CSRF protection; administrative Bearer tokens are not stored in browser storage. On 401 it redirects to `/login?continue=...`.
 
 ## Release 0.8 - Accounts & MFA
 
@@ -294,4 +306,4 @@ Run migration `000010_hardening` before starting v1.1.
 - **RP-initiated logout**: `id_token_hint` is bounded to 24h by `iat` so a leaked ID token cannot drive logout indefinitely.
 - **`X-Forwarded-For`**: the remaining `clientIP` helpers no longer read the header (RealIP already normalizes `RemoteAddr`), removing a latent spoofing regression.
 
-The request-rate limiter is per instance; horizontally scaled deployments must also enforce a global limit at the trusted ingress. Login lockout state is shared in PostgreSQL. Production validation rejects `sslmode=disable`, placeholder/equal secrets, a non-HTTPS issuer, and missing SMTP.
+The request-rate limiter is per instance; horizontally scaled deployments must also enforce a global limit at the trusted ingress. Login lockout state is shared in PostgreSQL. Production validation requires explicit PostgreSQL TLS (`require`, `verify-ca`, or `verify-full`) and rejects placeholder/equal secrets, a non-HTTPS issuer, and missing SMTP.

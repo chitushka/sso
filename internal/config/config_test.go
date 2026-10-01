@@ -30,6 +30,8 @@ func TestProductionConfigFailsClosed(t *testing.T) {
 	tests := map[string]func(*Config){
 		"http issuer":          func(c *Config) { c.OIDC.Issuer = "http://sso.example.com" },
 		"database without tls": func(c *Config) { c.Database.URL = "postgres://sso@db/sso?sslmode=disable" },
+		"database tls omitted": func(c *Config) { c.Database.URL = "postgres://sso@db/sso" },
+		"database tls prefer":  func(c *Config) { c.Database.URL = "postgres://sso@db/sso?sslmode=prefer" },
 		"equal secrets":        func(c *Config) { c.Security.EncryptionKey = c.Security.JWTSecret },
 		"placeholder secret":   func(c *Config) { c.Security.JWTSecret = "change-me-please-change-me-please" },
 		"missing smtp":         func(c *Config) { c.SMTP = SMTPConfig{Port: 587, StartTLS: true} },

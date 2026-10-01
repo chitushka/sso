@@ -1,3 +1,4 @@
+# Local development only. Use docker-compose.prod.yml for production.
 services:
   postgres:
     image: postgres:16-alpine

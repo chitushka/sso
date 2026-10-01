@@ -206,8 +206,12 @@ func (c Config) Validate() error {
 		if strings.Contains(strings.ToLower(c.Security.JWTSecret), "change-me") || strings.Contains(strings.ToLower(c.Security.EncryptionKey), "change-me") {
 			errs = append(errs, errors.New("placeholder secrets are forbidden outside development"))
 		}
-		if databaseErr == nil && strings.EqualFold(databaseURL.Query().Get("sslmode"), "disable") {
-			errs = append(errs, errors.New("PostgreSQL sslmode=disable is forbidden outside development"))
+		if databaseErr == nil {
+			switch strings.ToLower(databaseURL.Query().Get("sslmode")) {
+			case "require", "verify-ca", "verify-full":
+			default:
+				errs = append(errs, errors.New("SSO_DATABASE_URL must explicitly require PostgreSQL TLS outside development (sslmode=require, verify-ca, or verify-full)"))
+			}
 		}
 	}
 

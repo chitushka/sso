@@ -1,7 +1,7 @@
 FROM node:22-alpine AS ui
 WORKDIR /ui
-COPY web/admin/package.json web/admin/package-lock.json* ./
-RUN npm install
+COPY web/admin/package.json web/admin/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY web/admin .
 RUN npm run build
 
@@ -10,11 +10,13 @@ WORKDIR /src
 RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum* ./
 RUN go mod download
-COPY . .
+COPY cmd ./cmd
+COPY internal ./internal
+COPY migrations ./migrations
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.version=${VERSION}" -o /out/sso-api ./cmd/api
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN adduser -D -H -u 10001 appuser && apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=build /out/sso-api /app/sso-api
