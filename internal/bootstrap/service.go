@@ -18,7 +18,10 @@ type Service struct {
 	passwords PasswordHasher
 	rbac      rbac.Repository
 	audit     audit.Repository
+	atomic    AtomicRepository
 }
+
+func (s *Service) WithAtomic(r AtomicRepository) *Service { s.atomic = r; return s }
 
 func NewService(users users.Repository, passwords PasswordHasher, rbacRepo rbac.Repository, audit audit.Repository) *Service {
 	return &Service{users: users, passwords: passwords, rbac: rbacRepo, audit: audit}
@@ -57,12 +60,17 @@ func (s *Service) CreateAdmin(ctx context.Context, in CreateAdminInput, ip, ua s
 	if err != nil {
 		return users.User{}, err
 	}
-	u, err := s.users.Create(ctx, users.User{Username: in.Username, Email: in.Email, PasswordHash: &h, Status: users.StatusActive, Source: users.SourceLocal})
+	var u users.User
+	if s.atomic != nil {
+		u, err = s.atomic.CreateFirstAdmin(ctx, in.Username, in.Email, h)
+	} else {
+		u, err = s.users.Create(ctx, users.User{Username: in.Username, Email: in.Email, PasswordHash: &h, Status: users.StatusActive, Source: users.SourceLocal})
+	}
 	if err != nil {
 		_ = s.audit.Write(ctx, audit.Event{Action: "bootstrap_failed", TargetType: "user", TargetID: in.Username, IP: ip, UserAgent: ua})
 		return users.User{}, err
 	}
-	if s.rbac != nil {
+	if s.atomic == nil && s.rbac != nil {
 		adminRole, err := s.rbac.FindRoleByCode(ctx, "admin")
 		if err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return users.User{}, err

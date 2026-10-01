@@ -35,8 +35,9 @@ const router = createRouter({
   ]
 })
 
-router.beforeEach((to) => {
-  const auth = useAuthStore()
+router.beforeEach(async (to) => {
+	const auth = useAuthStore()
+	await auth.restore()
   if (!to.meta.public && !auth.isAuthenticated) {
     return { path: '/login', query: { continue: to.fullPath } }
   }

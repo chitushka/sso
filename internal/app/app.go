@@ -66,13 +66,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	mail := mailer.New(mailer.Config{Host: cfg.SMTP.Host, Port: cfg.SMTP.Port, Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, From: cfg.SMTP.From, StartTLS: cfg.SMTP.StartTLS}, logger)
 	tokenRepo := account.NewPostgresTokenRepository(pool)
 	recoveryRepo := account.NewPostgresRecoveryCodeRepository(pool)
-	accountSvc := account.NewService(userRepo, tokenRepo, recoveryRepo, sessionRepo, passwords, encryptor, mail, auditRepo, cfg.OIDC.Issuer)
+	accountSvc := account.NewService(userRepo, tokenRepo, recoveryRepo, passwords, encryptor, mail, auditRepo, cfg.OIDC.Issuer)
 	authSvc := auth.NewService(userRepo, sessionRepo, auditRepo, passwords, tokens, cfg.Token.SessionTTL).WithLDAP(ldapAuth).WithLockout(loginAttempts).WithMFA(accountSvc, tokens)
 	userSvc := users.NewService(userRepo, passwords, auditRepo).WithTokenCache(accessCache)
-	bootstrapSvc := bootstrap.NewService(userRepo, passwords, rbacRepo, auditRepo)
+	bootstrapSvc := bootstrap.NewService(userRepo, passwords, rbacRepo, auditRepo).WithAtomic(bootstrap.NewPostgresRepository(pool))
 	oauthRepo := oauth.NewPostgresRepository(pool, passwords)
 	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, tokens, auditRepo, passwords).WithTokenVerifier(tokens).WithRefreshTTL(cfg.Token.RefreshTTL)
-	accountSvc.WithRefreshRevoker(oauthRepo).WithTokenCache(accessCache)
+	accountSvc.WithTokenCache(accessCache)
 	oidcKeys := oidc.NewPostgresKeyStore(pool, encryptor)
 	oidcSvc := oidc.NewService(cfg.OIDC.Issuer, oidcKeys)
 	if err := oidcSvc.EnsureActiveKey(ctx); err != nil {
@@ -107,7 +107,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	}
 	// One Bearer middleware for every protected router, sharing the access-state
 	// cache so blocks and "sign out everywhere" are honoured consistently.
-	bearer := auth.BearerAuth([]byte(cfg.Security.JWTSecret), accessCache)
+	bearer := auth.ProtectedAuth([]byte(cfg.Security.JWTSecret), sessionRepo, userRepo, accessCache)
 	bootstrap.RegisterRoutes(r, bootstrapSvc)
 	auth.RegisterRoutes(r, authSvc, userRepo, sessionRepo, []byte(cfg.Security.JWTSecret), accessCache)
 	users.RegisterRoutes(r, userSvc, bearer, require)

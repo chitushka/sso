@@ -1,24 +1,10 @@
 <script setup>
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
-import api from './api'
 
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
-
-// After a brokered login the callback redirects with #broker_token=... in the
-// fragment; pick it up, persist it and load the user.
-const hashMatch = window.location.hash.match(/broker_token=([^&]+)/)
-if (hashMatch) {
-  auth.accessToken = hashMatch[1]
-  localStorage.setItem('sso_access_token', hashMatch[1])
-  history.replaceState(null, '', window.location.pathname + window.location.search)
-  api.get('/api/v1/auth/me').then(({ data }) => {
-    auth.user = data
-    localStorage.setItem('sso_user', JSON.stringify(data))
-  }).catch(() => {})
-}
 
 async function signOut() {
   await auth.logout()

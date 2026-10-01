@@ -6,9 +6,12 @@ import axios from 'axios'
 const api = axios.create({ baseURL: '/', withCredentials: true })
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('sso_access_token')
-  if (token) config.headers.Authorization = `Bearer ${token}`
-  return config
+	const method = String(config.method || 'get').toUpperCase()
+	if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+		const csrf = document.cookie.split('; ').find((v) => v.startsWith('sso_csrf='))
+		if (csrf) config.headers['X-CSRF-Token'] = decodeURIComponent(csrf.slice('sso_csrf='.length))
+	}
+	return config
 })
 
 api.interceptors.response.use(
@@ -17,9 +20,7 @@ api.interceptors.response.use(
     const status = err.response?.status
     const onLoginPage = window.location.pathname.startsWith('/login')
     if (status === 401 && !onLoginPage && !err.config?.url?.includes('/auth/login')) {
-      localStorage.removeItem('sso_access_token')
-      localStorage.removeItem('sso_user')
-      window.location.href = '/login?continue=' + encodeURIComponent(window.location.pathname + window.location.search)
+		window.location.href = '/login?continue=' + encodeURIComponent(window.location.pathname + window.location.search)
     }
     return Promise.reject(err)
   }

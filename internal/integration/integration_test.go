@@ -22,12 +22,16 @@ import (
 
 	"github.com/chitushka/sso/internal/app"
 	"github.com/chitushka/sso/internal/config"
+	"github.com/chitushka/sso/internal/users"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
-	server *httptest.Server
-	client *http.Client
+	server          *httptest.Server
+	client          *http.Client
+	testDatabaseURL string
 )
 
 func TestMain(m *testing.M) {
@@ -35,6 +39,7 @@ func TestMain(m *testing.M) {
 	if dbURL == "" {
 		os.Exit(0) // integration run not requested
 	}
+	testDatabaseURL = dbURL
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, dbURL)
 	if err != nil {
@@ -65,7 +70,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func doJSON(t *testing.T, method, path, bearer string, body any, out any) *http.Response {
+func doJSON(t *testing.T, method, path, credential string, body any, out any) *http.Response {
 	t.Helper()
 	var rd io.Reader
 	if body != nil {
@@ -82,8 +87,15 @@ func doJSON(t *testing.T, method, path, bearer string, body any, out any) *http.
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
+	if strings.HasPrefix(credential, "session:") {
+		parts := strings.SplitN(strings.TrimPrefix(credential, "session:"), ":", 2)
+		req.AddCookie(&http.Cookie{Name: "sso_session", Value: parts[0]})
+		if len(parts) == 2 {
+			req.AddCookie(&http.Cookie{Name: "sso_csrf", Value: parts[1]})
+			req.Header.Set("X-CSRF-Token", parts[1])
+		}
+	} else if credential != "" {
+		req.Header.Set("Authorization", "Bearer "+credential)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -100,11 +112,15 @@ func doJSON(t *testing.T, method, path, bearer string, body any, out any) *http.
 }
 
 type loginResult struct {
-	AccessToken  string `json:"access_token"`
 	SessionToken string `json:"-"`
+	CSRFToken    string `json:"-"`
 	User         struct {
 		ID string `json:"id"`
 	} `json:"user"`
+}
+
+func (r loginResult) credential() string {
+	return "session:" + r.SessionToken + ":" + r.CSRFToken
 }
 
 func TestEndToEnd(t *testing.T) {
@@ -117,26 +133,69 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("discovery failed: %d %v", resp.StatusCode, disco)
 	}
 
-	// 2. Bootstrap the first admin.
-	if resp := doJSON(t, "POST", "/api/v1/bootstrap", "", map[string]string{"username": "admin", "email": "admin@example.org", "password": "SuperSecret123!"}, nil); resp.StatusCode != 201 {
-		t.Fatalf("bootstrap: %d", resp.StatusCode)
+	// 2. Concurrent bootstrap attempts: exactly one transaction may win.
+	bootstrapBody, _ := json.Marshal(map[string]string{"username": "admin", "email": "admin@example.org", "password": "SuperSecret123!"})
+	statuses := make(chan int, 2)
+	for range 2 {
+		go func() {
+			req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/bootstrap", bytes.NewReader(bootstrapBody))
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := client.Do(req)
+			if err != nil {
+				statuses <- 0
+				return
+			}
+			resp.Body.Close()
+			statuses <- resp.StatusCode
+		}()
 	}
-	if resp := doJSON(t, "POST", "/api/v1/bootstrap", "", map[string]string{"username": "x", "email": "x@example.org", "password": "SuperSecret123!"}, nil); resp.StatusCode != 409 {
-		t.Fatalf("second bootstrap must 409, got %d", resp.StatusCode)
+	counts := map[int]int{<-statuses: 1}
+	counts[<-statuses]++
+	if counts[http.StatusCreated] != 1 || counts[http.StatusConflict] != 1 {
+		t.Fatalf("concurrent bootstrap statuses: %v", counts)
+	}
+
+	// An LDAP identity may not attach itself to the existing local admin by
+	// presenting the same mutable username.
+	pool, err := pgxpool.New(context.Background(), testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var providerID uuid.UUID
+	err = pool.QueryRow(context.Background(), `INSERT INTO ldap_providers
+		(name,host,bind_dn,bind_password,base_dn) VALUES('test','ldap','cn=x','encrypted','dc=example') RETURNING id`).Scan(&providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dn := "uid=admin,dc=example"
+	userRepo := users.NewPostgresRepository(pool)
+	if _, err = userRepo.UpsertLDAP(context.Background(), users.User{
+		Username: "admin", Email: "attacker@example.org", Status: users.StatusActive,
+		Source: users.SourceLDAP, LDAPProviderID: &providerID, LDAPDN: &dn,
+	}); err == nil {
+		t.Fatal("LDAP username collision captured the local admin")
+	}
+	localAdmin, err := userRepo.FindByUsername(context.Background(), "admin")
+	if err != nil || localAdmin.Source != users.SourceLocal || localAdmin.LDAPProviderID != nil {
+		t.Fatalf("local admin identity changed after LDAP collision: %+v %v", localAdmin, err)
 	}
 
 	// 3. Login as admin.
 	var admin loginResult
-	if resp := doJSON(t, "POST", "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "SuperSecret123!"}, &admin); resp.StatusCode != 200 || admin.AccessToken == "" {
+	if resp := doJSON(t, "POST", "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "SuperSecret123!"}, &admin); resp.StatusCode != 200 {
 		t.Fatalf("login failed: %d %+v", resp.StatusCode, admin)
 	} else {
 		for _, cookie := range resp.Cookies() {
 			if cookie.Name == "sso_session" {
 				admin.SessionToken = cookie.Value
 			}
+			if cookie.Name == "sso_csrf" {
+				admin.CSRFToken = cookie.Value
+			}
 		}
-		if admin.SessionToken == "" {
-			t.Fatal("login did not set the session cookie")
+		if admin.SessionToken == "" || admin.CSRFToken == "" {
+			t.Fatal("login did not set session and CSRF cookies")
 		}
 	}
 	if resp := doJSON(t, "POST", "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "wrong"}, nil); resp.StatusCode != 401 {
@@ -151,7 +210,7 @@ func TestEndToEnd(t *testing.T) {
 		} `json:"client"`
 		ClientSecret string `json:"client_secret"`
 	}
-	if resp := doJSON(t, "POST", "/api/v1/oauth/clients", admin.AccessToken, map[string]any{
+	if resp := doJSON(t, "POST", "/api/v1/oauth/clients", admin.credential(), map[string]any{
 		"client_id": "test-app", "name": "Test App", "type": "confidential",
 		"redirect_uris": []string{"http://localhost/cb"}, "allowed_scopes": []string{"openid", "profile", "email"},
 		"skip_consent": true, "enabled": true,
@@ -211,17 +270,26 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// 7. RBAC: a plain user has no admin permissions.
-	if resp := doJSON(t, "POST", "/api/v1/users", admin.AccessToken, map[string]string{"username": "bob", "email": "bob@example.org", "password": "BobPassword1!"}, nil); resp.StatusCode != 201 {
+	if resp := doJSON(t, "POST", "/api/v1/users", admin.credential(), map[string]string{"username": "bob", "email": "bob@example.org", "password": "BobPassword1!"}, nil); resp.StatusCode != 201 {
 		t.Fatalf("create user: %d", resp.StatusCode)
 	}
 	var bob loginResult
 	if resp := doJSON(t, "POST", "/api/v1/auth/login", "", map[string]string{"username": "bob", "password": "BobPassword1!"}, &bob); resp.StatusCode != 200 {
 		t.Fatalf("bob login: %d", resp.StatusCode)
+	} else {
+		for _, cookie := range resp.Cookies() {
+			switch cookie.Name {
+			case "sso_session":
+				bob.SessionToken = cookie.Value
+			case "sso_csrf":
+				bob.CSRFToken = cookie.Value
+			}
+		}
 	}
-	if resp := doJSON(t, "GET", "/api/v1/users", bob.AccessToken, nil, nil); resp.StatusCode != 403 {
+	if resp := doJSON(t, "GET", "/api/v1/users", bob.credential(), nil, nil); resp.StatusCode != 403 {
 		t.Fatalf("bob must get 403 on admin API, got %d", resp.StatusCode)
 	}
-	if resp := doJSON(t, "GET", "/api/v1/users", admin.AccessToken, nil, nil); resp.StatusCode != 200 {
+	if resp := doJSON(t, "GET", "/api/v1/users", admin.credential(), nil, nil); resp.StatusCode != 200 {
 		t.Fatalf("admin must list users, got %d", resp.StatusCode)
 	}
 

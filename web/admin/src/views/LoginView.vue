@@ -33,10 +33,8 @@ function brokerURL(p) {
 }
 
 function finish(data) {
-  auth.accessToken = data.access_token
   auth.user = data.user
-  localStorage.setItem('sso_access_token', data.access_token)
-  localStorage.setItem('sso_user', JSON.stringify(data.user))
+  auth.restored = true
   const target = String(route.query.continue || '/')
   // External OAuth authorize URLs need a full navigation so the session
   // cookie reaches the backend.

@@ -181,8 +181,11 @@ func RegisterRoutes(r chi.Router, svc *Service, authSvc *auth.Service, bearerAut
 				}
 				return
 			}
-			http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: res.SessionToken, Path: "/", HttpOnly: true, Secure: httpx.IsHTTPS(req), SameSite: http.SameSiteLaxMode, Expires: res.SessionExpiresAt})
-			httpx.JSON(w, 200, res)
+			if err := auth.SetSessionCookies(w, req, res); err != nil {
+				httpx.Error(w, 500, "login failed")
+				return
+			}
+			httpx.JSON(w, 200, auth.BrowserLoginResult(res))
 		})
 	})
 }

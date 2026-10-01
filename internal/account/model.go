@@ -29,6 +29,19 @@ type RecoveryCodeRepository interface {
 	DeleteAll(ctx context.Context, userID uuid.UUID) error
 }
 
+// AtomicRepository owns security-sensitive multi-table state transitions.
+type AtomicRepository interface {
+	ResetPassword(ctx context.Context, tokenHash, passwordHash string) (uuid.UUID, error)
+	ChangePassword(ctx context.Context, userID uuid.UUID, currentHash, newHash string) error
+	VerifyEmail(ctx context.Context, tokenHash string) (uuid.UUID, error)
+	ActivateMFA(ctx context.Context, userID uuid.UUID, encryptedSecret string, codeHashes []string) error
+}
+
+type CredentialRepository interface {
+	TokenRepository
+	AtomicRepository
+}
+
 func newToken() (raw, hash string, err error) {
 	b := make([]byte, 32)
 	if _, err = rand.Read(b); err != nil {

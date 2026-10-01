@@ -47,7 +47,10 @@ func (r *PostgresRepository) Create(ctx context.Context, u User) (User, error) {
 	return x, nil
 }
 func (r *PostgresRepository) UpsertLDAP(ctx context.Context, u User) (User, error) {
-	row := r.pool.QueryRow(ctx, `INSERT INTO users(username,email,password_hash,status,source,ldap_provider_id,ldap_dn) VALUES($1,$2,NULL,$3,'ldap',$4,$5) ON CONFLICT(username) DO UPDATE SET email=EXCLUDED.email, source='ldap', ldap_provider_id=EXCLUDED.ldap_provider_id, ldap_dn=EXCLUDED.ldap_dn, updated_at=now() RETURNING `+userCols, u.Username, u.Email, u.Status, u.LDAPProviderID, u.LDAPDN)
+	if u.LDAPProviderID == nil || u.LDAPDN == nil || *u.LDAPDN == "" {
+		return User{}, errors.New("ldap provider and immutable dn are required")
+	}
+	row := r.pool.QueryRow(ctx, `INSERT INTO users(username,email,password_hash,status,source,ldap_provider_id,ldap_dn) VALUES($1,$2,NULL,$3,'ldap',$4,$5) ON CONFLICT (ldap_provider_id, lower(ldap_dn)) WHERE source='ldap' DO UPDATE SET username=EXCLUDED.username,email=EXCLUDED.email,updated_at=now() RETURNING `+userCols, u.Username, u.Email, u.Status, u.LDAPProviderID, u.LDAPDN)
 	return scanUser(row)
 }
 func (r *PostgresRepository) FindByID(ctx context.Context, id uuid.UUID) (User, error) {

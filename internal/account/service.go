@@ -28,12 +28,6 @@ const (
 	issuerApp = "SSO"
 )
 
-// RefreshRevoker lets the account service kill OAuth refresh tokens on
-// password reset without importing the oauth package.
-type RefreshRevoker interface {
-	RevokeRefreshTokensByUser(ctx context.Context, userID uuid.UUID) error
-}
-
 // TokenCacheInvalidator evicts a user's cached access state so a password reset
 // takes effect immediately instead of after the cache TTL.
 type TokenCacheInvalidator interface {
@@ -42,22 +36,19 @@ type TokenCacheInvalidator interface {
 
 type Service struct {
 	users      users.Repository
-	tokens     TokenRepository
+	tokens     CredentialRepository
 	recovery   RecoveryCodeRepository
-	sessions   auth.SessionRepository
 	passwords  auth.PasswordHasher
 	encryptor  secrets.Encryptor
 	mail       mailer.Mailer
 	audit      audit.Repository
-	refresh    RefreshRevoker
 	tokenCache TokenCacheInvalidator
 	issuer     string
 }
 
-func NewService(users users.Repository, tokens TokenRepository, recovery RecoveryCodeRepository, sessions auth.SessionRepository, passwords auth.PasswordHasher, encryptor secrets.Encryptor, mail mailer.Mailer, aud audit.Repository, issuer string) *Service {
-	return &Service{users: users, tokens: tokens, recovery: recovery, sessions: sessions, passwords: passwords, encryptor: encryptor, mail: mail, audit: aud, issuer: issuer}
+func NewService(users users.Repository, tokens CredentialRepository, recovery RecoveryCodeRepository, passwords auth.PasswordHasher, encryptor secrets.Encryptor, mail mailer.Mailer, aud audit.Repository, issuer string) *Service {
+	return &Service{users: users, tokens: tokens, recovery: recovery, passwords: passwords, encryptor: encryptor, mail: mail, audit: aud, issuer: issuer}
 }
-func (s *Service) WithRefreshRevoker(r RefreshRevoker) *Service { s.refresh = r; return s }
 
 // WithTokenCache wires the access-state cache so a password reset busts it at once.
 func (s *Service) WithTokenCache(c TokenCacheInvalidator) *Service { s.tokenCache = c; return s }
@@ -89,36 +80,22 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword, ip, 
 	if err := users.ValidatePassword(newPassword); err != nil {
 		return err
 	}
-	userID, err := s.tokens.Consume(ctx, PurposePasswordReset, HashToken(rawToken))
-	if err != nil {
-		return ErrInvalidToken
-	}
 	hash, err := s.passwords.Hash(newPassword)
 	if err != nil {
 		return err
 	}
-	if err := s.users.SetPasswordHash(ctx, userID, hash); err != nil {
+	userID, err := s.tokens.ResetPassword(ctx, HashToken(rawToken), hash)
+	if errors.Is(err, storage.ErrNotFound) {
+		return ErrInvalidToken
+	}
+	if err != nil {
 		return err
-	}
-	if err := s.revokeCredentials(ctx, userID); err != nil {
-		return err
-	}
-	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "password_reset_completed", TargetType: "user", TargetID: userID.String(), IP: ip, UserAgent: ua})
-	return nil
-}
-
-func (s *Service) revokeCredentials(ctx context.Context, userID uuid.UUID) error {
-	errs := []error{
-		s.sessions.RevokeAllByUser(ctx, userID),
-		s.users.InvalidateTokens(ctx, userID),
-	}
-	if s.refresh != nil {
-		errs = append(errs, s.refresh.RevokeRefreshTokensByUser(ctx, userID))
 	}
 	if s.tokenCache != nil {
 		s.tokenCache.Invalidate(userID)
 	}
-	return errors.Join(errs...)
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "password_reset_completed", TargetType: "user", TargetID: userID.String(), IP: ip, UserAgent: ua})
+	return nil
 }
 
 // ChangePassword requires the current password and revokes every existing
@@ -142,11 +119,11 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, oldPassw
 	if err != nil {
 		return err
 	}
-	if err := s.users.SetPasswordHash(ctx, userID, hash); err != nil {
+	if err := s.tokens.ChangePassword(ctx, userID, *u.PasswordHash, hash); err != nil {
 		return err
 	}
-	if err := s.revokeCredentials(ctx, userID); err != nil {
-		return err
+	if s.tokenCache != nil {
+		s.tokenCache.Invalidate(userID)
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "password_changed", TargetType: "user", TargetID: userID.String()})
 	return nil
@@ -173,17 +150,12 @@ func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID
 }
 
 func (s *Service) VerifyEmail(ctx context.Context, rawToken string) error {
-	userID, err := s.tokens.Consume(ctx, PurposeEmailVerify, HashToken(rawToken))
-	if err != nil {
+	userID, err := s.tokens.VerifyEmail(ctx, HashToken(rawToken))
+	if errors.Is(err, storage.ErrNotFound) {
 		return ErrInvalidToken
 	}
-	if err := s.users.SetEmailVerified(ctx, userID, true); err != nil {
+	if err != nil {
 		return err
-	}
-	// Pending accounts become active once the email is proven.
-	if u, ferr := s.users.FindByID(ctx, userID); ferr == nil && u.Status == users.StatusPending {
-		u.Status = users.StatusActive
-		_, _ = s.users.Update(ctx, u)
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "email_verified", TargetType: "user", TargetID: userID.String()})
 	return nil
@@ -231,9 +203,6 @@ func (s *Service) MFAActivate(ctx context.Context, userID uuid.UUID, code string
 	if !mfa.Verify(secret, code, time.Now()) {
 		return nil, ErrInvalidCode
 	}
-	if err := s.users.SetMFA(ctx, userID, true, u.MFASecret); err != nil {
-		return nil, err
-	}
 	codes := make([]string, 0, 8)
 	hashes := make([]string, 0, 8)
 	for i := 0; i < 8; i++ {
@@ -244,7 +213,7 @@ func (s *Service) MFAActivate(ctx context.Context, userID uuid.UUID, code string
 		codes = append(codes, c)
 		hashes = append(hashes, HashToken(c))
 	}
-	if err := s.recovery.Replace(ctx, userID, hashes); err != nil {
+	if err := s.tokens.ActivateMFA(ctx, userID, u.MFASecret, hashes); err != nil {
 		return nil, err
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "mfa_enabled", TargetType: "user", TargetID: userID.String()})

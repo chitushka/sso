@@ -62,8 +62,6 @@ async function revokeAllSessions() {
   try {
     await api.delete('/api/v1/auth/sessions')
   } finally {
-    localStorage.removeItem('sso_access_token')
-    localStorage.removeItem('sso_user')
     window.location.href = '/login'
   }
 }

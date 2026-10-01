@@ -51,12 +51,14 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			http.Redirect(w, req, "/login?broker_error=failed", http.StatusFound)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "sso_session", Value: res.SessionToken, Path: "/", HttpOnly: true, Secure: httpx.IsHTTPS(req), SameSite: http.SameSiteLaxMode, Expires: res.SessionExpiresAt})
+		if err := auth.SetSessionCookies(w, req, res); err != nil {
+			http.Redirect(w, req, "/login?broker_error=failed", http.StatusFound)
+			return
+		}
 		if !safeContinue(cont) {
 			cont = "/"
 		}
-		// The SPA picks the access token up from the fragment (not sent to servers or logs).
-		http.Redirect(w, req, cont+"#broker_token="+res.AccessToken, http.StatusFound)
+		http.Redirect(w, req, cont, http.StatusFound)
 	})
 
 	r.Route("/api/v1/identity-providers", func(r chi.Router) {
