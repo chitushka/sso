@@ -56,8 +56,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	rbacRepo := rbac.NewPostgresRepository(pool)
 	rbacSvc := rbac.NewService(rbacRepo, auditRepo).WithGroups(rbacRepo)
 	passwords := auth.NewArgon2idHasher()
-	tokens := auth.NewJWTIssuer([]byte(cfg.Security.JWTSecret), cfg.Token.AccessTTL)
 	encryptor := secrets.NewAESGCM(cfg.Security.EncryptionKey)
+	oidcKeys := oidc.NewPostgresKeyStore(pool, encryptor)
+	oidcSvc := oidc.NewService(cfg.OIDC.Issuer, oidcKeys).WithAccessTokenTTL(cfg.Token.AccessTTL)
+	if err := oidcSvc.EnsureActiveKey(ctx); err != nil {
+		return nil, err
+	}
+	oidcSvc.StartRotation(ctx, logger)
+	tokens := oidcSvc
 	ldapRepo := ldap.NewPostgresRepository(pool, encryptor)
 	ldapClient := ldap.NewClient()
 	ldapSvc := ldap.NewService(ldapRepo, ldapClient, auditRepo)
@@ -73,12 +79,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	oauthRepo := oauth.NewPostgresRepository(pool, passwords)
 	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, tokens, auditRepo, passwords).WithTokenVerifier(tokens).WithRefreshTTL(cfg.Token.RefreshTTL)
 	accountSvc.WithTokenCache(accessCache)
-	oidcKeys := oidc.NewPostgresKeyStore(pool, encryptor)
-	oidcSvc := oidc.NewService(cfg.OIDC.Issuer, oidcKeys)
-	if err := oidcSvc.EnsureActiveKey(ctx); err != nil {
-		return nil, err
-	}
-	oidcSvc.StartRotation(ctx, logger)
 	oauthSvc.WithIDTokenIssuer(oidcSvc).WithIDTokenVerifier(oidcSvc).WithBackchannel(oidcSvc)
 	metrics := middleware.NewMetrics()
 	r := chi.NewRouter()
@@ -107,9 +107,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	}
 	// One Bearer middleware for every protected router, sharing the access-state
 	// cache so blocks and "sign out everywhere" are honoured consistently.
-	bearer := auth.ProtectedAuth([]byte(cfg.Security.JWTSecret), sessionRepo, userRepo, accessCache)
+	bearer := auth.ProtectedAuth(tokens, sessionRepo, userRepo, accessCache)
 	bootstrap.RegisterRoutes(r, bootstrapSvc)
-	auth.RegisterRoutes(r, authSvc, userRepo, sessionRepo, []byte(cfg.Security.JWTSecret), accessCache)
+	auth.RegisterRoutes(r, authSvc, userRepo, sessionRepo, tokens, accessCache)
 	users.RegisterRoutes(r, userSvc, bearer, require)
 	ldap.RegisterRoutes(r, ldapSvc, bearer, require)
 	oauth.RegisterRoutes(r, oauthSvc, bearer, require)

@@ -16,7 +16,7 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
-func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessions SessionBrowser, jwtSecret []byte, revocations TokenChecker) {
+func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessions SessionBrowser, verifier AccessTokenVerifier, revocations TokenChecker) {
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		r.Post("/login", func(w http.ResponseWriter, r *http.Request) {
 			var req loginRequest
@@ -57,7 +57,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 			ClearSessionCookies(w, r)
 			httpx.JSON(w, 200, map[string]string{"status": "logged_out"})
 		})
-		r.With(BearerAuth(jwtSecret, revocations)).Get("/sessions", func(w http.ResponseWriter, r *http.Request) {
+		r.With(BearerAuth(verifier, revocations)).Get("/sessions", func(w http.ResponseWriter, r *http.Request) {
 			claims := ClaimsFromContext(r.Context())
 			userID, err := uuid.Parse(claims.UserID)
 			if err != nil {
@@ -71,7 +71,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 			}
 			httpx.JSON(w, 200, out)
 		})
-		r.With(BearerAuth(jwtSecret, revocations)).Delete("/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+		r.With(BearerAuth(verifier, revocations)).Delete("/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 			claims := ClaimsFromContext(r.Context())
 			userID, err := uuid.Parse(claims.UserID)
 			if err != nil {
@@ -93,7 +93,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 			}
 			httpx.JSON(w, 200, map[string]string{"status": "revoked"})
 		})
-		r.With(BearerAuth(jwtSecret, revocations)).Delete("/sessions", func(w http.ResponseWriter, r *http.Request) {
+		r.With(BearerAuth(verifier, revocations)).Delete("/sessions", func(w http.ResponseWriter, r *http.Request) {
 			claims := ClaimsFromContext(r.Context())
 			userID, err := uuid.Parse(claims.UserID)
 			if err != nil {
@@ -113,7 +113,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 			ClearSessionCookies(w, r)
 			httpx.JSON(w, 200, map[string]string{"status": "all_revoked"})
 		})
-		r.With(BearerAuth(jwtSecret, revocations)).Get("/me", func(w http.ResponseWriter, r *http.Request) {
+		r.With(BearerAuth(verifier, revocations)).Get("/me", func(w http.ResponseWriter, r *http.Request) {
 			claims := ClaimsFromContext(r.Context())
 			id, err := uuid.Parse(claims.UserID)
 			if err != nil {

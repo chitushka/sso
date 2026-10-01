@@ -21,7 +21,7 @@ type IDTokenIssuer interface {
 	IssueIDToken(ctx context.Context, u users.User, clientID, nonce string, authTime time.Time) (string, error)
 }
 type TokenVerifier interface {
-	Verify(token string) (*auth.Claims, error)
+	VerifyOAuthAccessToken(ctx context.Context, token, audience string) (*auth.Claims, error)
 }
 
 // IDTokenVerifier validates an id_token_hint and returns its subject and audience.
@@ -232,7 +232,7 @@ func (s *Service) clientCredentialsGrant(ctx context.Context, in TokenInput) (To
 		return TokenResult{}, err
 	}
 	svcAccount := users.User{ID: c.ID, Username: c.ClientID, Source: "client"}
-	access, exp, err := s.tokens.IssueClientCredentialsToken(svcAccount, c.ClientID, in.Scope)
+	access, exp, err := s.tokens.IssueClientCredentialsToken(ctx, svcAccount, c.ClientID, in.Scope)
 	if err != nil {
 		return TokenResult{}, err
 	}
@@ -317,7 +317,7 @@ func (s *Service) refreshGrant(ctx context.Context, in TokenInput) (TokenResult,
 	return s.issue(ctx, u, c, rt.Scope, "", rt.CreatedAt, rt.FamilyID)
 }
 func (s *Service) issue(ctx context.Context, u users.User, c Client, scope, nonce string, authTime time.Time, family uuid.UUID) (TokenResult, error) {
-	access, exp, err := s.tokens.IssueOAuthAccessToken(u, c.ClientID, scope)
+	access, exp, err := s.tokens.IssueOAuthAccessToken(ctx, u, c.ClientID, scope)
 	if err != nil {
 		return TokenResult{}, err
 	}
@@ -484,13 +484,23 @@ func (s *Service) Introspect(ctx context.Context, in IntrospectInput) (map[strin
 	}
 	inactive := map[string]any{"active": false}
 	if rt, err := s.repo.FindRefreshTokenByHash(ctx, hashCode(in.Token)); err == nil {
-		if rt.RevokedAt != nil || rt.RotatedAt != nil || time.Now().After(rt.ExpiresAt) {
+		if rt.ClientID != in.ClientID || rt.RevokedAt != nil || rt.RotatedAt != nil || time.Now().After(rt.ExpiresAt) {
 			return inactive, nil
 		}
 		return map[string]any{"active": true, "token_type": "refresh_token", "client_id": rt.ClientID, "sub": rt.UserID.String(), "scope": rt.Scope, "exp": rt.ExpiresAt.Unix(), "iat": rt.CreatedAt.Unix()}, nil
 	}
 	if s.verifier != nil {
-		if claims, err := s.verifier.Verify(in.Token); err == nil {
+		if claims, err := s.verifier.VerifyOAuthAccessToken(ctx, in.Token, in.ClientID); err == nil {
+			if claims.TokenType == auth.TokenTypeOAuthAccess {
+				userID, parseErr := uuid.Parse(claims.UserID)
+				if parseErr != nil {
+					return inactive, nil
+				}
+				active, invalidBefore, stateErr := s.users.AccessState(ctx, userID)
+				if stateErr != nil || !active || (invalidBefore != nil && (claims.IssuedAt == nil || !claims.IssuedAt.Time.After(*invalidBefore))) {
+					return inactive, nil
+				}
+			}
 			out := map[string]any{"active": true, "token_type": "Bearer", "client_id": claims.ClientID, "sub": claims.UserID, "username": claims.Username, "scope": claims.Scope}
 			if claims.ExpiresAt != nil {
 				out["exp"] = claims.ExpiresAt.Unix()

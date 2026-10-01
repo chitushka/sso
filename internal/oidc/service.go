@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/storage"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/golang-jwt/jwt/v5"
@@ -39,20 +40,26 @@ type KeyStore interface {
 	RetireExpired(ctx context.Context) error
 }
 type Service struct {
-	issuer string
-	keys   KeyStore
-	client *http.Client
+	issuer    string
+	keys      KeyStore
+	client    *http.Client
+	accessTTL time.Duration
 }
 
 func NewService(issuer string, keys KeyStore) *Service {
 	client := &http.Client{Timeout: 10 * time.Second}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Service{issuer: issuer, keys: keys, client: client}
+	return &Service{issuer: strings.TrimRight(issuer, "/"), keys: keys, client: client, accessTTL: 15 * time.Minute}
+}
+
+func (s *Service) WithAccessTokenTTL(ttl time.Duration) *Service {
+	s.accessTTL = ttl
+	return s
 }
 
 // Rotation policy: a new active key is generated once the current one exceeds
-// keyMaxAge; the old key stays in JWKS as "retiring" for retireGrace so
-// already-issued ID tokens (15m TTL) remain verifiable.
+// keyMaxAge; the old key stays in JWKS as "retiring" for at least retireGrace
+// and never less than the configured access-token lifetime.
 const (
 	keyMaxAge             = 30 * 24 * time.Hour
 	retireGrace           = 24 * time.Hour
@@ -66,6 +73,9 @@ func (s *Service) EnsureActiveKey(ctx context.Context) error {
 	_, err := s.keys.ActiveKey(ctx)
 	if err == nil {
 		return nil
+	}
+	if !errors.Is(err, storage.ErrNotFound) {
+		return err
 	}
 	return s.generateActiveKey(ctx)
 }
@@ -93,7 +103,11 @@ func (s *Service) RotateIfNeeded(ctx context.Context) error {
 	if time.Since(k.CreatedAt) < keyMaxAge {
 		return nil
 	}
-	if err := s.keys.MarkRetiring(ctx, k.ID, time.Now().Add(retireGrace)); err != nil {
+	grace := retireGrace
+	if minimum := s.accessTTL + time.Minute; minimum > grace {
+		grace = minimum
+	}
+	if err := s.keys.MarkRetiring(ctx, k.ID, time.Now().Add(grace)); err != nil {
 		return err
 	}
 	return s.generateActiveKey(ctx)
@@ -116,6 +130,133 @@ func (s *Service) StartRotation(ctx context.Context, logger *slog.Logger) {
 		}
 	}()
 }
+
+func (s *Service) adminAudience() string { return s.issuer + "/api/v1" }
+func (s *Service) mfaAudience() string   { return s.issuer + "/api/v1/auth/mfa" }
+
+func (s *Service) Issue(ctx context.Context, u users.User) (string, time.Time, error) {
+	return s.issueAccessToken(ctx, u, s.adminAudience(), "", "", auth.TokenTypeAdminAccess, s.accessTTL, "at+jwt")
+}
+
+func (s *Service) IssueOAuthAccessToken(ctx context.Context, u users.User, clientID, scope string) (string, time.Time, error) {
+	return s.issueAccessToken(ctx, u, clientID, clientID, scope, auth.TokenTypeOAuthAccess, s.accessTTL, "at+jwt")
+}
+
+func (s *Service) IssueClientCredentialsToken(ctx context.Context, u users.User, clientID, scope string) (string, time.Time, error) {
+	return s.issueAccessToken(ctx, u, clientID, clientID, scope, auth.TokenTypeClientCredentials, s.accessTTL, "at+jwt")
+}
+
+func (s *Service) IssueMFAToken(ctx context.Context, u users.User) (string, error) {
+	raw, _, err := s.issueAccessToken(ctx, u, s.mfaAudience(), "", "", auth.TokenTypeMFA, 5*time.Minute, "mfa+jwt")
+	return raw, err
+}
+
+func (s *Service) issueAccessToken(ctx context.Context, u users.User, audience, clientID, scope, tokenType string, ttl time.Duration, headerType string) (string, time.Time, error) {
+	if audience == "" {
+		return "", time.Time{}, errors.New("token audience is required")
+	}
+	k, err := s.keys.ActiveKey(ctx)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	priv, err := parsePrivateKey(k.PrivateKeyPEM)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(ttl)
+	claims := auth.Claims{
+		UserID: u.ID.String(), Username: u.Username, Email: u.Email, Source: u.Source,
+		ClientID: clientID, Scope: scope, TokenType: tokenType,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: s.issuer, Subject: u.ID.String(), Audience: jwt.ClaimStrings{audience},
+			ExpiresAt: jwt.NewNumericDate(expiresAt), IssuedAt: jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now), ID: uuid.NewString(),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = k.Kid
+	token.Header["typ"] = headerType
+	raw, err := token.SignedString(priv)
+	return raw, expiresAt, err
+}
+
+func parsePrivateKey(raw string) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(raw))
+	if block == nil {
+		return nil, errors.New("invalid OIDC private key")
+	}
+	return x509.ParsePKCS1PrivateKey(block.Bytes)
+}
+
+func (s *Service) VerifyAdminAccessToken(ctx context.Context, raw string) (*auth.Claims, error) {
+	return s.verifyAccessToken(ctx, raw, s.adminAudience(), "at+jwt", auth.TokenTypeAdminAccess)
+}
+
+func (s *Service) VerifyOAuthAccessToken(ctx context.Context, raw, audience string) (*auth.Claims, error) {
+	return s.verifyAccessToken(ctx, raw, audience, "at+jwt", auth.TokenTypeOAuthAccess, auth.TokenTypeClientCredentials)
+}
+
+func (s *Service) VerifyMFAToken(ctx context.Context, raw string) (string, error) {
+	claims, err := s.verifyAccessToken(ctx, raw, s.mfaAudience(), "mfa+jwt", auth.TokenTypeMFA)
+	if err != nil {
+		return "", err
+	}
+	return claims.UserID, nil
+}
+
+func (s *Service) verifyAccessToken(ctx context.Context, raw, audience, headerType string, allowedTypes ...string) (*auth.Claims, error) {
+	if audience == "" {
+		return nil, errors.New("token audience is required")
+	}
+	keys, err := s.keys.PublicKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	claims := &auth.Claims{}
+	token, err := jwt.ParseWithClaims(raw, claims, func(token *jwt.Token) (any, error) {
+		if token.Method != jwt.SigningMethodRS256 {
+			return nil, errors.New("invalid token algorithm")
+		}
+		if typ, _ := token.Header["typ"].(string); typ != headerType {
+			return nil, errors.New("invalid token header type")
+		}
+		kid, _ := token.Header["kid"].(string)
+		if kid == "" {
+			return nil, errors.New("missing kid")
+		}
+		for _, key := range keys {
+			if key.Kid == kid && key.Alg == "RS256" {
+				return parsePublicKey(key.PublicKeyPEM)
+			}
+		}
+		return nil, errors.New("unknown kid")
+	}, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(s.issuer), jwt.WithAudience(audience), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(30*time.Second))
+	if err != nil || !token.Valid || claims.Subject == "" || claims.IssuedAt == nil {
+		return nil, errors.New("invalid access token")
+	}
+	allowed := false
+	for _, tokenType := range allowedTypes {
+		if claims.TokenType == tokenType {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, errors.New("invalid token type")
+	}
+	claims.UserID = claims.Subject
+	return claims, nil
+}
+
+func parsePublicKey(raw string) (*rsa.PublicKey, error) {
+	block, _ := pem.Decode([]byte(raw))
+	if block == nil {
+		return nil, errors.New("invalid OIDC public key")
+	}
+	return x509.ParsePKCS1PublicKey(block.Bytes)
+}
+
 func (s *Service) IssueIDToken(ctx context.Context, u users.User, clientID, nonce string, authTime time.Time) (string, error) {
 	k, err := s.keys.ActiveKey(ctx)
 	if err != nil {

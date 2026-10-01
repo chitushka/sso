@@ -64,13 +64,13 @@ func (memHasher) Verify(p, h string) (bool, error) {
 
 type memTokens struct{}
 
-func (memTokens) Issue(_ users.User) (string, time.Time, error) {
+func (memTokens) Issue(_ context.Context, _ users.User) (string, time.Time, error) {
 	return "jwt", time.Now().Add(15 * time.Minute), nil
 }
-func (memTokens) IssueOAuthAccessToken(_ users.User, _, _ string) (string, time.Time, error) {
+func (memTokens) IssueOAuthAccessToken(_ context.Context, _ users.User, _, _ string) (string, time.Time, error) {
 	return "jwt", time.Now().Add(15 * time.Minute), nil
 }
-func (memTokens) IssueClientCredentialsToken(_ users.User, _, _ string) (string, time.Time, error) {
+func (memTokens) IssueClientCredentialsToken(_ context.Context, _ users.User, _, _ string) (string, time.Time, error) {
 	return "jwt", time.Now().Add(15 * time.Minute), nil
 }
 
@@ -180,13 +180,27 @@ func (f fakeMFAVerifier) VerifyCode(_ context.Context, _ users.User, code string
 	return code == f.valid, nil
 }
 
+type fakeMFATokens struct{}
+
+func (fakeMFATokens) IssueMFAToken(_ context.Context, u users.User) (string, error) {
+	return "mfa:" + u.ID.String(), nil
+}
+func (fakeMFATokens) VerifyMFAToken(_ context.Context, token string) (string, error) {
+	const prefix = "mfa:"
+	if len(token) <= len(prefix) || token[:len(prefix)] != prefix {
+		return "", errors.New("invalid mfa token")
+	}
+	return token[len(prefix):], nil
+}
+
 func TestMFALoginFlow(t *testing.T) {
 	hash := "hash:correct-password"
 	u := users.User{ID: uuid.New(), Username: "alice", Status: users.StatusActive, Source: users.SourceLocal, PasswordHash: &hash, MFAEnabled: true}
-	issuer := NewJWTIssuer([]byte("0123456789abcdef0123456789abcdef"), 15*time.Minute)
+	issuer := memTokens{}
+	mfaTokens := fakeMFATokens{}
 	svc := NewService(&memUsers{u: u}, memSessions{}, &memAudit{}, memHasher{}, issuer, time.Hour).
 		WithLockout(newMemAttempts()).
-		WithMFA(fakeMFAVerifier{valid: "123456"}, issuer)
+		WithMFA(fakeMFAVerifier{valid: "123456"}, mfaTokens)
 
 	res, err := svc.Login(context.Background(), LoginInput{Username: "alice", Password: "correct-password", IP: "1.2.3.4"})
 	if err != nil {
@@ -198,9 +212,8 @@ func TestMFALoginFlow(t *testing.T) {
 	if res.SessionToken != "" || res.AccessToken != "" {
 		t.Fatal("no session may be issued before the second factor")
 	}
-	// The pending token must not pass BearerAuth.
-	if claims, err := issuer.Verify(res.MFAToken); err != nil || claims.Purpose != "mfa" {
-		t.Fatalf("mfa token must carry purpose=mfa, got %+v err %v", claims, err)
+	if subject, err := mfaTokens.VerifyMFAToken(context.Background(), res.MFAToken); err != nil || subject != u.ID.String() {
+		t.Fatalf("mfa token must identify the pending user, got %q err %v", subject, err)
 	}
 	// Wrong code fails.
 	if _, err := svc.CompleteMFALogin(context.Background(), res.MFAToken, "000000", LoginInput{IP: "1.2.3.4"}); !errors.Is(err, ErrInvalidMFACode) {

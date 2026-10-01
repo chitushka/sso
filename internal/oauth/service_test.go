@@ -10,6 +10,7 @@ import (
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/storage"
 	"github.com/chitushka/sso/internal/users"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
@@ -147,7 +148,11 @@ func (r *fakeRepo) SaveConsent(_ context.Context, c UserConsent) error {
 	return nil
 }
 
-type fakeUsers struct{ u users.User }
+type fakeUsers struct {
+	u             users.User
+	inactive      bool
+	invalidBefore *time.Time
+}
 
 func (f *fakeUsers) Create(_ context.Context, u users.User) (users.User, error)     { return u, nil }
 func (f *fakeUsers) UpsertLDAP(_ context.Context, u users.User) (users.User, error) { return u, nil }
@@ -172,7 +177,7 @@ func (f *fakeUsers) FindByEmail(_ context.Context, _ string) (users.User, error)
 func (f *fakeUsers) TouchLastLogin(_ context.Context, _ uuid.UUID) error         { return nil }
 func (f *fakeUsers) InvalidateTokens(_ context.Context, _ uuid.UUID) error       { return nil }
 func (f *fakeUsers) AccessState(_ context.Context, _ uuid.UUID) (bool, *time.Time, error) {
-	return true, nil, nil
+	return !f.inactive, f.invalidBefore, nil
 }
 func (f *fakeUsers) Count(_ context.Context) (int64, error) { return 1, nil }
 
@@ -192,14 +197,23 @@ func (f *fakeSessions) RevokeAllByUser(_ context.Context, _ uuid.UUID) error { r
 
 type fakeTokens struct{}
 
-func (fakeTokens) Issue(_ users.User) (string, time.Time, error) {
+func (fakeTokens) Issue(_ context.Context, _ users.User) (string, time.Time, error) {
 	return "jwt", time.Now().Add(15 * time.Minute), nil
 }
-func (fakeTokens) IssueOAuthAccessToken(_ users.User, _, _ string) (string, time.Time, error) {
+func (fakeTokens) IssueOAuthAccessToken(_ context.Context, _ users.User, _, _ string) (string, time.Time, error) {
 	return "access-token", time.Now().Add(15 * time.Minute), nil
 }
-func (fakeTokens) IssueClientCredentialsToken(_ users.User, _, _ string) (string, time.Time, error) {
+func (fakeTokens) IssueClientCredentialsToken(_ context.Context, _ users.User, _, _ string) (string, time.Time, error) {
 	return "client-token", time.Now().Add(15 * time.Minute), nil
+}
+
+type fakeTokenVerifier struct{ claims *auth.Claims }
+
+func (f fakeTokenVerifier) VerifyOAuthAccessToken(_ context.Context, token, audience string) (*auth.Claims, error) {
+	if token != "access-token" || f.claims.ClientID != audience {
+		return nil, errors.New("invalid token")
+	}
+	return f.claims, nil
 }
 
 type fakeAudit struct{}
@@ -455,5 +469,30 @@ func TestRevokeAndIntrospect(t *testing.T) {
 	}
 	if _, err := svc.Token(context.Background(), TokenInput{GrantType: "refresh_token", RefreshToken: out.RefreshToken, ClientID: "web-app", ClientSecret: "correct-secret"}); !errors.Is(err, ErrInvalidGrant) {
 		t.Fatalf("revoked token must not refresh, got %v", err)
+	}
+}
+
+func TestIntrospectionRevokesOAuthAccessTokenAtCredentialCutoff(t *testing.T) {
+	svc, _, u, _ := setup(t, confidentialClient())
+	issuedAt := time.Now().Add(-time.Minute)
+	claims := &auth.Claims{
+		UserID: u.ID.String(), ClientID: "web-app", TokenType: auth.TokenTypeOAuthAccess,
+		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(issuedAt), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))},
+	}
+	svc.WithTokenVerifier(fakeTokenVerifier{claims: claims})
+	in := IntrospectInput{Token: "access-token", ClientID: "web-app", ClientSecret: "correct-secret"}
+	res, err := svc.Introspect(context.Background(), in)
+	if err != nil || res["active"] != true {
+		t.Fatalf("fresh access token must be active: result=%v err=%v", res, err)
+	}
+
+	cutoff := issuedAt.Add(time.Second)
+	svc.users.(*fakeUsers).invalidBefore = &cutoff
+	res, err = svc.Introspect(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["active"] != false {
+		t.Fatalf("credential cutoff must revoke issued OAuth access token: %v", res)
 	}
 }

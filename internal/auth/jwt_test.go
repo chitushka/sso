@@ -2,12 +2,13 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/chitushka/sso/internal/users"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
@@ -20,8 +21,24 @@ func (s stubChecker) AccessState(_ context.Context, _ uuid.UUID) (bool, *time.Ti
 	return s.active, s.before, nil
 }
 
+type stubAccessVerifier struct {
+	adminToken string
+	claims     *Claims
+}
+
+func (s stubAccessVerifier) VerifyAdminAccessToken(_ context.Context, token string) (*Claims, error) {
+	if token != s.adminToken {
+		return nil, errors.New("wrong token class")
+	}
+	return s.claims, nil
+}
+
+func (stubAccessVerifier) VerifyOAuthAccessToken(_ context.Context, _, _ string) (*Claims, error) {
+	return nil, errors.New("not used")
+}
+
 func serve(mw func(http.Handler) http.Handler, token string) int {
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -32,50 +49,28 @@ func serve(mw func(http.Handler) http.Handler, token string) int {
 }
 
 func TestBearerAuthHonoursTokenRevocation(t *testing.T) {
-	secret := []byte("0123456789abcdef0123456789abcdef")
-	issuer := NewJWTIssuer(secret, 15*time.Minute)
-	u := users.User{ID: uuid.New(), Username: "alice", Source: users.SourceLocal}
-	token, _, err := issuer.IssueOAuthAccessToken(u, "", "")
-	if err != nil {
-		t.Fatal(err)
+	issuedAt := time.Now().Add(-time.Minute)
+	claims := &Claims{
+		UserID: uuid.NewString(), TokenType: TokenTypeAdminAccess,
+		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(issuedAt)},
 	}
-	// Active account, no cutoff → token is accepted.
-	if code := serve(BearerAuth(secret, stubChecker{active: true, before: nil}), token); code != 200 {
+	verifier := stubAccessVerifier{adminToken: "admin-token", claims: claims}
+
+	if code := serve(BearerAuth(verifier, stubChecker{active: true}), "admin-token"); code != http.StatusOK {
 		t.Fatalf("valid token must pass, got %d", code)
 	}
-	// Cutoff after the token's iat → first-party token is revoked.
-	cutoff := time.Now().Add(time.Second)
-	if code := serve(BearerAuth(secret, stubChecker{active: true, before: &cutoff}), token); code != 401 {
+	cutoff := issuedAt.Add(time.Second)
+	if code := serve(BearerAuth(verifier, stubChecker{active: true, before: &cutoff}), "admin-token"); code != http.StatusUnauthorized {
 		t.Fatalf("revoked token must be rejected, got %d", code)
 	}
-	// An OAuth token issued to an external app (has a client_id) must survive the
-	// same cutoff: "sign out everywhere" must not knock external apps offline.
-	extToken, _, err := issuer.IssueOAuthAccessToken(u, "external-app", "openid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if code := serve(BearerAuth(secret, stubChecker{active: true, before: &cutoff}), extToken); code != 200 {
-		t.Fatalf("external-app token must not be revoked by cutoff, got %d", code)
-	}
-	// But a blocked account loses access immediately — even the external-app token.
-	if code := serve(BearerAuth(secret, stubChecker{active: false}), extToken); code != 401 {
-		t.Fatalf("blocked account's external token must be rejected, got %d", code)
-	}
-	if code := serve(BearerAuth(secret, stubChecker{active: false}), token); code != 401 {
-		t.Fatalf("blocked account's first-party token must be rejected, got %d", code)
+	if code := serve(BearerAuth(verifier, stubChecker{active: false}), "admin-token"); code != http.StatusUnauthorized {
+		t.Fatalf("blocked account token must be rejected, got %d", code)
 	}
 }
 
-func TestBearerAuthRejectsClientCredentialsToken(t *testing.T) {
-	secret := []byte("0123456789abcdef0123456789abcdef")
-	issuer := NewJWTIssuer(secret, 15*time.Minute)
-	svc := users.User{ID: uuid.New(), Username: "service", Source: "client"}
-	token, _, err := issuer.IssueClientCredentialsToken(svc, "service", "profile")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A service token (Purpose set) must never reach this SSO's own APIs.
-	if code := serve(BearerAuth(secret, nil), token); code != 401 {
-		t.Fatalf("client_credentials token must be rejected by BearerAuth, got %d", code)
+func TestBearerAuthRejectsOtherTokenClasses(t *testing.T) {
+	verifier := stubAccessVerifier{adminToken: "admin-token", claims: &Claims{UserID: uuid.NewString()}}
+	if code := serve(BearerAuth(verifier, nil), "oauth-token"); code != http.StatusUnauthorized {
+		t.Fatalf("OAuth token must be rejected by admin API, got %d", code)
 	}
 }

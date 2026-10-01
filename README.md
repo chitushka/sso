@@ -60,7 +60,7 @@ Release 0.5.1 standardizes all application environment variables under the `SSO_
 | `SSO_DATABASE_URL` | Yes | `postgres://sso@db.example.org:5432/sso?sslmode=verify-full` | PostgreSQL connection string. Production requires explicit TLS. |
 | `SSO_MIGRATE_ON_START` | No | `false` | Apply embedded DB migrations on startup. |
 | `SSO_TRUSTED_PROXIES` | No | — | Comma-separated CIDRs/IPs of reverse proxies allowed to set `X-Forwarded-For`. Empty = trust none. |
-| `SSO_JWT_SECRET` | Yes | `change-me-please-change-me-please-change-me` | JWT signing secret. Must be at least 32 characters. |
+| `SSO_JWT_SECRET` | Yes | `change-me-please-change-me-please-change-me` | HMAC secret for short-lived broker state. Access, MFA and OIDC tokens use rotating RSA keys stored encrypted in PostgreSQL. Must be at least 32 characters. |
 | `SSO_ENCRYPTION_KEY` | Yes | `change-me-please-change-me-please-change-me` | Key for encrypting stored secrets (LDAP bind passwords) with AES-256-GCM. Must be at least 32 characters. |
 | `SSO_ACCESS_TOKEN_TTL` | No | `15m` | Access token lifetime. |
 | `SSO_SESSION_TTL` | No | `720h` | Session lifetime. |
@@ -292,14 +292,15 @@ Deferred (no consumer yet): SAML 2.0, SCIM, token exchange.
 
 Run migration `000010_hardening` before starting v1.1.
 
-- **Revocable access tokens**: `BearerAuth` checks the user's `status` + `tokens_invalid_before`, read through a short-TTL in-memory cache (`AccessCacheTTL`, 5s) so the check normally costs no DB round-trip. Block, "sign out everywhere" and password reset bust the cache entry explicitly, so all three are effective immediately; the TTL only bounds staleness for changes made directly in the database.
-  - **Blocked/deleted account** → every token is rejected (`account is not active`), including OAuth tokens held by external applications.
-  - **`tokens_invalid_before` cutoff** (set on "sign out everywhere" `DELETE /api/v1/auth/sessions` and password reset) → rejects **first-party** tokens (no `client_id`) issued at or before that moment (`token revoked`); external applications' OAuth tokens are exempt from the cutoff and keep their own lifetime/refresh, so a user signing out of the SSO does not knock third-party apps offline.
+- **Revocable access tokens**: the admin API checks the user's `status` + `tokens_invalid_before` through a short-TTL cache. OAuth introspection performs the same account-state and cutoff check for user-delegated access tokens, so password change/reset and "sign out everywhere" revoke already-issued access tokens as well as sessions and refresh credentials.
+  - **Blocked/deleted account** → user access tokens are inactive immediately.
+  - **`tokens_invalid_before` cutoff** → every user access token issued at or before the cutoff is rejected, regardless of `client_id`.
 - **TOTP replay protection**: the last accepted time-step is stored in `users.mfa_last_used_counter`; a code cannot be reused within its validity window.
 - **Federated login safety**: accounts are linked to an external identity only when the provider asserts a verified email (`email_verified`), and never auto-linked to an MFA-protected local account (manual linking required) — closes an account-takeover / MFA-bypass path.
 - **LDAP**: empty passwords are rejected before bind, closing the LDAP "unauthenticated bind" login bypass.
 - **Refresh rotation** is now race-free: rotation is a single atomic `UPDATE ... WHERE rotated_at IS NULL`; losing the race is treated as token reuse and revokes the family.
-- **client_credentials** access tokens carry `purpose=client_credentials` and are refused by `BearerAuth` for this SSO's own APIs (still valid for external resource servers and introspection).
+- **JWT isolation and rotation**: access tokens are signed with RS256 and carry `kid`, `iss`, `aud`, `exp`, `iat` and explicit `token_type`. Admin API tokens use `<issuer>/api/v1` as audience; OAuth access tokens use their OAuth `client_id`. Active and retiring public keys are published through JWKS.
+- **client_credentials** access tokens carry `token_type=client_credentials` and are refused by the admin API (still valid for their audience and introspection).
 - **Uniform password policy**: minimum 12 characters everywhere (bootstrap, admin create, reset, change), max 128.
 - **Wider rate limiting**: the token bucket now also covers `/api/v1/auth/mfa/verify`, `/api/v1/auth/password/forgot`, `/api/v1/auth/password/reset`, `/api/v1/auth/email/verify`, `/oauth2/revoke` and `/oauth2/introspect`.
 - **Request body cap**: a 1 MiB `BodyLimit` middleware guards JSON/form endpoints against oversized-payload memory exhaustion.

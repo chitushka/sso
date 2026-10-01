@@ -5,7 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/storage"
+	"github.com/chitushka/sso/internal/users"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
@@ -105,5 +108,71 @@ func TestRotateIfNeededRotatesOldKey(t *testing.T) {
 	pub, _ := ks.PublicKeys(context.Background())
 	if len(pub) != 2 {
 		t.Fatalf("old key must stay in JWKS while retiring, got %d keys", len(pub))
+	}
+}
+
+func TestAccessTokensUseRotatingRSAKeysAndStrictClaims(t *testing.T) {
+	ctx := context.Background()
+	ks := &fakeKeyStore{}
+	svc := NewService("https://sso.example.com/", ks).WithAccessTokenTTL(15 * time.Minute)
+	if err := svc.EnsureActiveKey(ctx); err != nil {
+		t.Fatal(err)
+	}
+	u := users.User{ID: uuid.New(), Username: "alice", Email: "alice@example.com", Source: users.SourceLocal}
+
+	adminToken, _, err := svc.Issue(ctx, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _, err := jwt.NewParser().ParseUnverified(adminToken, &auth.Claims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Method.Alg() != "RS256" || parsed.Header["kid"] == "" || parsed.Header["typ"] != "at+jwt" {
+		t.Fatalf("unexpected protected header: %#v", parsed.Header)
+	}
+	adminClaims, err := svc.VerifyAdminAccessToken(ctx, adminToken)
+	if err != nil {
+		t.Fatalf("verify admin token: %v", err)
+	}
+	if adminClaims.Issuer != "https://sso.example.com" || adminClaims.TokenType != auth.TokenTypeAdminAccess || adminClaims.UserID != u.ID.String() {
+		t.Fatalf("unexpected admin claims: %+v", adminClaims)
+	}
+	if _, err := svc.VerifyOAuthAccessToken(ctx, adminToken, "web-app"); err == nil {
+		t.Fatal("admin token must not be accepted by an OAuth resource server")
+	}
+
+	oauthToken, _, err := svc.IssueOAuthAccessToken(ctx, u, "web-app", "openid profile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.VerifyOAuthAccessToken(ctx, oauthToken, "other-app"); err == nil {
+		t.Fatal("OAuth token must be rejected for a different audience")
+	}
+	oauthClaims, err := svc.VerifyOAuthAccessToken(ctx, oauthToken, "web-app")
+	if err != nil {
+		t.Fatalf("verify OAuth token: %v", err)
+	}
+	if oauthClaims.TokenType != auth.TokenTypeOAuthAccess || oauthClaims.ClientID != "web-app" {
+		t.Fatalf("unexpected OAuth claims: %+v", oauthClaims)
+	}
+	if _, err := svc.VerifyAdminAccessToken(ctx, oauthToken); err == nil {
+		t.Fatal("OAuth token must not be accepted by the admin API")
+	}
+	foreignIssuer := NewService("https://other-issuer.example.com", ks)
+	foreignToken, _, err := foreignIssuer.IssueOAuthAccessToken(ctx, u, "web-app", "openid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.VerifyOAuthAccessToken(ctx, foreignToken, "web-app"); err == nil {
+		t.Fatal("OAuth token from a different issuer must be rejected")
+	}
+
+	ks.keys[0].CreatedAt = time.Now().Add(-31 * 24 * time.Hour)
+	if err := svc.RotateIfNeeded(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.VerifyOAuthAccessToken(ctx, oauthToken, "web-app"); err != nil {
+		t.Fatalf("token signed by a retiring key must remain valid: %v", err)
 	}
 }

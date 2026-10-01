@@ -14,8 +14,8 @@ import (
 
 const csrfCookieName = "sso_csrf"
 
-func ProtectedAuth(secret []byte, sessions SessionRepository, userRepo users.Repository, revocations TokenChecker) func(http.Handler) http.Handler {
-	bearer := BearerAuth(secret, revocations)
+func ProtectedAuth(verifier AccessTokenVerifier, sessions SessionRepository, userRepo users.Repository, revocations TokenChecker) func(http.Handler) http.Handler {
+	bearer := BearerAuth(verifier, revocations)
 	return func(next http.Handler) http.Handler {
 		bearerNext := bearer(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

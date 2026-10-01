@@ -22,8 +22,8 @@ type MFAVerifier interface {
 
 // MFATokenIssuer bridges the two steps of a two-factor login.
 type MFATokenIssuer interface {
-	IssueMFAToken(u users.User) (string, error)
-	VerifyMFAToken(token string) (string, error)
+	IssueMFAToken(ctx context.Context, u users.User) (string, error)
+	VerifyMFAToken(ctx context.Context, token string) (string, error)
 }
 type Service struct {
 	users      users.Repository
@@ -135,7 +135,7 @@ func (s *Service) registerFailure(ctx context.Context, in LoginInput) error {
 }
 func (s *Service) finishLogin(ctx context.Context, u users.User, in LoginInput) (LoginResult, error) {
 	if u.MFAEnabled && s.mfaTokens != nil {
-		t, err := s.mfaTokens.IssueMFAToken(u)
+		t, err := s.mfaTokens.IssueMFAToken(ctx, u)
 		if err != nil {
 			return LoginResult{}, err
 		}
@@ -150,7 +150,7 @@ func (s *Service) CompleteMFALogin(ctx context.Context, mfaToken, code string, i
 	if s.mfaTokens == nil || s.mfa == nil {
 		return LoginResult{}, errors.New("mfa is not configured")
 	}
-	userIDStr, err := s.mfaTokens.VerifyMFAToken(mfaToken)
+	userIDStr, err := s.mfaTokens.VerifyMFAToken(ctx, mfaToken)
 	if err != nil {
 		return LoginResult{}, ErrInvalidCredentials
 	}
@@ -185,7 +185,7 @@ func (s *Service) EstablishFederatedSession(ctx context.Context, u users.User, i
 }
 
 func (s *Service) establishSession(ctx context.Context, u users.User, in LoginInput) (LoginResult, error) {
-	access, accessExp, err := s.tokens.Issue(u)
+	access, accessExp, err := s.tokens.Issue(ctx, u)
 	if err != nil {
 		return LoginResult{}, err
 	}

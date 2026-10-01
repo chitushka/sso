@@ -108,14 +108,15 @@ func (r *PostgresRepository) TouchLastLogin(ctx context.Context, id uuid.UUID) e
 }
 
 // InvalidateTokens revokes every access token already issued to the user by
-// advancing tokens_invalid_before to now(); BearerAuth rejects older tokens.
+// advancing tokens_invalid_before to now(). Admin authentication and OAuth
+// introspection both reject older user tokens.
 func (r *PostgresRepository) InvalidateTokens(ctx context.Context, id uuid.UUID) error {
 	_, err := r.pool.Exec(ctx, `UPDATE users SET tokens_invalid_before=now(),updated_at=now() WHERE id=$1`, id)
 	return err
 }
 
 // AccessState returns whether the account is still active and the cutoff before
-// which its first-party access tokens are void, in one lookup for BearerAuth.
+// which all of its user-delegated access tokens are void.
 func (r *PostgresRepository) AccessState(ctx context.Context, id uuid.UUID) (bool, *time.Time, error) {
 	var status Status
 	var t *time.Time

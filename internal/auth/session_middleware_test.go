@@ -24,7 +24,7 @@ func TestProtectedAuthCookieRequiresCSRFForWrites(t *testing.T) {
 	userID := uuid.New()
 	userRepo := &memUsers{u: users.User{ID: userID, Username: "admin", Status: users.StatusActive}}
 	sessions := cookieSessions{session: Session{UserID: userID, ExpiresAt: time.Now().Add(time.Hour)}}
-	handler := ProtectedAuth([]byte("unused-for-cookie"), sessions, userRepo, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := ProtectedAuth(nil, sessions, userRepo, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ClaimsFromContext(r.Context()).UserID != userID.String() {
 			t.Fatal("session user was not placed in context")
 		}
