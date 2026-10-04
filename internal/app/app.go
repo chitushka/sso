@@ -70,8 +70,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	oidcSvc.StartRotation(ctx, logger)
 	tokens := oidcSvc
 	ldapRepo := ldap.NewPostgresRepository(pool, encryptor)
-	ldapClient := ldap.NewClient()
-	ldapSvc := ldap.NewService(ldapRepo, ldapClient, auditRepo)
+	ldapClient := ldap.NewClient().WithTLSRequired(cfg.IsProduction())
+	ldapSvc := ldap.NewService(ldapRepo, ldapClient, auditRepo).WithTLSRequired(cfg.IsProduction())
 	ldapAuth := ldap.NewAuthenticator(ldapRepo, ldapClient, userRepo, auditRepo).WithGroupSync(rbacRepo)
 	loginAttempts := auth.NewPostgresLoginAttemptRepository(pool)
 	mail := mailer.New(mailer.Config{Host: cfg.SMTP.Host, Port: cfg.SMTP.Port, Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, From: cfg.SMTP.From, StartTLS: cfg.SMTP.StartTLS}, logger)

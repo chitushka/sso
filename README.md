@@ -72,7 +72,7 @@ Release 0.5.1 standardizes all application environment variables under the `SSO_
 | `SSO_SMTP_PORT` | No | `587` | SMTP port. |
 | `SSO_SMTP_USERNAME` / `SSO_SMTP_PASSWORD` | No | — | SMTP credentials (plain auth). |
 | `SSO_SMTP_FROM` | No | `sso@example.org` | Sender address; required to enable SMTP. |
-| `SSO_SMTP_STARTTLS` | No | `true` | Upgrade the SMTP connection with STARTTLS. |
+| `SSO_SMTP_STARTTLS` | No | `true` | Upgrade SMTP with STARTTLS; must be `true` in production even when authentication is disabled. |
 
 Deprecated variable names such as `DATABASE_URL`, `SSO_DB_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, and `SESSION_TTL` are intentionally not supported by v0.5.1.
 
@@ -317,4 +317,4 @@ Run migration `000010_hardening` before starting v1.1.
 - **RP-initiated logout**: `id_token_hint` is bounded to 24h by `iat` so a leaked ID token cannot drive logout indefinitely.
 - **`X-Forwarded-For`**: the remaining `clientIP` helpers no longer read the header (RealIP already normalizes `RemoteAddr`), removing a latent spoofing regression.
 
-The request-rate limiter is per instance; horizontally scaled deployments must also enforce a global limit at the trusted ingress. Login lockout state is shared in PostgreSQL. Production validation requires explicit PostgreSQL TLS (`require`, `verify-ca`, or `verify-full`) and rejects placeholder/equal secrets, a non-HTTPS issuer, and missing SMTP.
+The request-rate limiter is per instance; horizontally scaled deployments must also enforce a global limit at the trusted ingress. Login lockout state is shared in PostgreSQL. Production validation requires explicit PostgreSQL TLS (`require`, `verify-ca`, or `verify-full`), SMTP STARTTLS, and LDAP over LDAPS or STARTTLS; it also rejects placeholder/equal secrets, a non-HTTPS issuer, and missing SMTP.

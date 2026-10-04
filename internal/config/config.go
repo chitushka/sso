@@ -246,6 +246,9 @@ func (c Config) Validate() error {
 		if c.SMTP.Username != "" && !c.SMTP.StartTLS {
 			errs = append(errs, errors.New("SMTP authentication requires STARTTLS"))
 		}
+		if production && !c.SMTP.StartTLS {
+			errs = append(errs, errors.New("SSO_SMTP_STARTTLS must be true outside development"))
+		}
 	}
 	if c.SMTP.Port < 1 || c.SMTP.Port > 65535 {
 		errs = append(errs, errors.New("SSO_SMTP_PORT must be between 1 and 65535"))
@@ -253,6 +256,8 @@ func (c Config) Validate() error {
 
 	return errors.Join(errs...)
 }
+
+func (c Config) IsProduction() bool { return !isDevelopment(c.Env) }
 
 func isDevelopment(environment string) bool {
 	switch strings.ToLower(strings.TrimSpace(environment)) {

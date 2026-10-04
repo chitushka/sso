@@ -29,6 +29,10 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			out, err := svc.Create(r.Context(), p)
 			if err != nil {
+				if errors.Is(err, ErrTLSRequired) || errors.Is(err, ErrConflictingTLSModes) {
+					httpx.Error(w, 400, err.Error())
+					return
+				}
 				httpx.Error(w, 500, "failed to create provider")
 				return
 			}
@@ -48,6 +52,10 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			p.ID = id
 			out, err := svc.Update(r.Context(), p)
 			if err != nil {
+				if errors.Is(err, ErrTLSRequired) || errors.Is(err, ErrConflictingTLSModes) {
+					httpx.Error(w, 400, err.Error())
+					return
+				}
 				if errors.Is(err, storage.ErrNotFound) {
 					httpx.Error(w, 404, "provider not found")
 					return

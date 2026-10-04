@@ -9,17 +9,26 @@ import (
 )
 
 type Service struct {
-	repo   Repository
-	client DirectoryClient
-	audit  audit.Repository
+	repo       Repository
+	client     DirectoryClient
+	audit      audit.Repository
+	requireTLS bool
 }
 
 func NewService(repo Repository, client DirectoryClient, audit audit.Repository) *Service {
 	return &Service{repo: repo, client: client, audit: audit}
 }
+func (s *Service) WithTLSRequired(required bool) *Service {
+	s.requireTLS = required
+	return s
+}
 func (s *Service) Create(ctx context.Context, p Provider) (Provider, error) {
 	if p.Port == 0 {
-		p.Port = 389
+		if p.UseTLS {
+			p.Port = 636
+		} else {
+			p.Port = 389
+		}
 	}
 	if p.UserFilter == "" {
 		p.UserFilter = "(&(objectClass=user)(sAMAccountName={username}))"
@@ -33,6 +42,9 @@ func (s *Service) Create(ctx context.Context, p Provider) (Provider, error) {
 	if p.DisplayNameAttribute == "" {
 		p.DisplayNameAttribute = "displayName"
 	}
+	if err := validateProviderTransport(p, s.requireTLS); err != nil {
+		return Provider{}, err
+	}
 	out, err := s.repo.Create(ctx, p)
 	if err != nil {
 		return Provider{}, err
@@ -43,8 +55,16 @@ func (s *Service) Create(ctx context.Context, p Provider) (Provider, error) {
 	return out, nil
 }
 func (s *Service) List(ctx context.Context) ([]Provider, error) { return s.repo.List(ctx) }
-func (s *Service) Test(ctx context.Context, p Provider) error   { return s.client.TestConnection(ctx, p) }
+func (s *Service) Test(ctx context.Context, p Provider) error {
+	if err := validateProviderTransport(p, s.requireTLS); err != nil {
+		return err
+	}
+	return s.client.TestConnection(ctx, p)
+}
 func (s *Service) Update(ctx context.Context, p Provider) (Provider, error) {
+	if err := validateProviderTransport(p, s.requireTLS); err != nil {
+		return Provider{}, err
+	}
 	// An empty bind password keeps the stored one so admins can update
 	// connection settings without re-entering the secret.
 	if p.BindPassword == "" {

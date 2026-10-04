@@ -4,18 +4,26 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"github.com/go-ldap/ldap/v3"
 	"strings"
+
+	"github.com/go-ldap/ldap/v3"
 )
 
 type DirectoryClient interface {
 	Authenticate(ctx context.Context, p Provider, username, password string) (Identity, error)
 	TestConnection(ctx context.Context, p Provider) error
 }
-type Client struct{}
+type Client struct{ requireTLS bool }
 
 func NewClient() *Client { return &Client{} }
+func (c *Client) WithTLSRequired(required bool) *Client {
+	c.requireTLS = required
+	return c
+}
 func (c *Client) dial(p Provider) (*ldap.Conn, error) {
+	if err := validateProviderTransport(p, c.requireTLS); err != nil {
+		return nil, err
+	}
 	addr := fmt.Sprintf("%s:%d", p.Host, p.Port)
 	if p.UseTLS {
 		return ldap.DialTLS("tcp", addr, &tls.Config{ServerName: p.Host, MinVersion: tls.VersionTLS12})
@@ -31,6 +39,16 @@ func (c *Client) dial(p Provider) (*ldap.Conn, error) {
 		}
 	}
 	return conn, nil
+}
+
+func validateProviderTransport(p Provider, requireTLS bool) error {
+	if p.UseTLS && p.StartTLS {
+		return ErrConflictingTLSModes
+	}
+	if requireTLS && !p.UseTLS && !p.StartTLS {
+		return ErrTLSRequired
+	}
+	return nil
 }
 func (c *Client) TestConnection(ctx context.Context, p Provider) error {
 	conn, err := c.dial(p)

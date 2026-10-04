@@ -35,6 +35,7 @@ func TestProductionConfigFailsClosed(t *testing.T) {
 		"equal secrets":        func(c *Config) { c.Security.EncryptionKey = c.Security.JWTSecret },
 		"placeholder secret":   func(c *Config) { c.Security.JWTSecret = "change-me-please-change-me-please" },
 		"missing smtp":         func(c *Config) { c.SMTP = SMTPConfig{Port: 587, StartTLS: true} },
+		"smtp without tls":     func(c *Config) { c.SMTP.StartTLS = false },
 		"invalid proxy":        func(c *Config) { c.HTTPSecurity.TrustedProxies = []string{"not-an-ip"} },
 		"credential without tls": func(c *Config) {
 			c.SMTP.Username = "user"
