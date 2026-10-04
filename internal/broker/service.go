@@ -78,10 +78,13 @@ func (s *Service) Create(ctx context.Context, p Provider) (Provider, error) {
 		return Provider{}, err
 	}
 	out, err := s.repo.Create(ctx, p)
-	if err == nil {
-		_ = s.audit.Write(ctx, audit.Event{Action: "identity_provider_created", TargetType: "identity_provider", TargetID: out.ID.String()})
+	if err != nil {
+		return Provider{}, err
 	}
-	return out, err
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "identity_provider_created", TargetType: "identity_provider", TargetID: out.ID.String()}); err != nil {
+		return Provider{}, err
+	}
+	return out, nil
 }
 
 func (s *Service) Update(ctx context.Context, p Provider) (Provider, error) {
@@ -90,18 +93,20 @@ func (s *Service) Update(ctx context.Context, p Provider) (Provider, error) {
 		return Provider{}, err
 	}
 	out, err := s.repo.Update(ctx, p)
-	if err == nil {
-		_ = s.audit.Write(ctx, audit.Event{Action: "identity_provider_updated", TargetType: "identity_provider", TargetID: out.ID.String()})
+	if err != nil {
+		return Provider{}, err
 	}
-	return out, err
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "identity_provider_updated", TargetType: "identity_provider", TargetID: out.ID.String()}); err != nil {
+		return Provider{}, err
+	}
+	return out, nil
 }
 
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	err := s.repo.Delete(ctx, id)
-	if err == nil {
-		_ = s.audit.Write(ctx, audit.Event{Action: "identity_provider_deleted", TargetType: "identity_provider", TargetID: id.String()})
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
 	}
-	return err
+	return audit.Write(ctx, s.audit, audit.Event{Action: "identity_provider_deleted", TargetType: "identity_provider", TargetID: id.String()})
 }
 
 func validateProvider(p Provider) error {

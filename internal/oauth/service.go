@@ -7,14 +7,15 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"net/url"
+	"strings"
+	"time"
+
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/storage"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/google/uuid"
-	"net/url"
-	"strings"
-	"time"
 )
 
 type IDTokenIssuer interface {
@@ -95,7 +96,13 @@ func (s *Service) CreateClient(ctx context.Context, in CreateClientInput) (Creat
 		in.Type = ClientConfidential
 	}
 	c, sec, err := s.repo.CreateClient(ctx, Client{ClientID: in.ClientID, Name: in.Name, Type: in.Type, RedirectURIs: nonNil(in.RedirectURIs), AllowedScopes: nonNil(in.AllowedScopes), PostLogoutRedirectURIs: nonNil(in.PostLogoutRedirectURIs), BackchannelLogoutURI: in.BackchannelLogoutURI, SkipConsent: in.SkipConsent, Enabled: in.Enabled})
-	return CreateClientResult{Client: c, ClientSecret: sec}, err
+	if err != nil {
+		return CreateClientResult{}, err
+	}
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "oauth_client_created", TargetType: "oauth_client", TargetID: c.ClientID}); err != nil {
+		return CreateClientResult{}, err
+	}
+	return CreateClientResult{Client: c, ClientSecret: sec}, nil
 }
 func (s *Service) GetClient(ctx context.Context, id uuid.UUID) (Client, error) {
 	return s.repo.FindClientByID(ctx, id)
@@ -114,25 +121,29 @@ type UpdateClientInput struct {
 
 func (s *Service) UpdateClient(ctx context.Context, id uuid.UUID, in UpdateClientInput) (Client, error) {
 	c, err := s.repo.UpdateClient(ctx, Client{ID: id, Name: in.Name, RedirectURIs: nonNil(in.RedirectURIs), AllowedScopes: nonNil(in.AllowedScopes), PostLogoutRedirectURIs: nonNil(in.PostLogoutRedirectURIs), BackchannelLogoutURI: in.BackchannelLogoutURI, SkipConsent: in.SkipConsent, Enabled: in.Enabled})
-	if err == nil {
-		_ = s.audit.Write(ctx, audit.Event{Action: "oauth_client_updated", TargetType: "oauth_client", TargetID: c.ClientID})
+	if err != nil {
+		return Client{}, err
 	}
-	return c, err
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "oauth_client_updated", TargetType: "oauth_client", TargetID: c.ClientID}); err != nil {
+		return Client{}, err
+	}
+	return c, nil
 }
 func (s *Service) RotateClientSecret(ctx context.Context, id uuid.UUID) (CreateClientResult, error) {
 	c, raw, err := s.repo.RotateClientSecret(ctx, id)
 	if err != nil {
 		return CreateClientResult{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "oauth_client_secret_rotated", TargetType: "oauth_client", TargetID: c.ClientID})
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "oauth_client_secret_rotated", TargetType: "oauth_client", TargetID: c.ClientID}); err != nil {
+		return CreateClientResult{}, err
+	}
 	return CreateClientResult{Client: c, ClientSecret: raw}, nil
 }
 func (s *Service) DeleteClient(ctx context.Context, id uuid.UUID) error {
-	err := s.repo.DeleteClient(ctx, id)
-	if err == nil {
-		_ = s.audit.Write(ctx, audit.Event{Action: "oauth_client_deleted", TargetType: "oauth_client", TargetID: id.String()})
+	if err := s.repo.DeleteClient(ctx, id); err != nil {
+		return err
 	}
-	return err
+	return audit.Write(ctx, s.audit, audit.Event{Action: "oauth_client_deleted", TargetType: "oauth_client", TargetID: id.String()})
 }
 
 type AuthorizeInput struct{ ResponseType, ClientID, RedirectURI, Scope, State, CodeChallenge, CodeChallengeMethod, Nonce, SessionToken string }

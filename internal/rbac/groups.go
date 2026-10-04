@@ -59,7 +59,9 @@ func (s *Service) CreateGroup(ctx context.Context, in CreateGroupInput) (Group, 
 	if err != nil {
 		return Group{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "group_created", TargetType: "group", TargetID: g.ID.String()})
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "group_created", TargetType: "group", TargetID: g.ID.String()}); err != nil {
+		return Group{}, err
+	}
 	return g, nil
 }
 func (s *Service) UpdateGroup(ctx context.Context, id uuid.UUID, in UpdateGroupInput) (Group, error) {
@@ -71,15 +73,16 @@ func (s *Service) UpdateGroup(ctx context.Context, id uuid.UUID, in UpdateGroupI
 	if err != nil {
 		return Group{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "group_updated", TargetType: "group", TargetID: g.ID.String()})
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "group_updated", TargetType: "group", TargetID: g.ID.String()}); err != nil {
+		return Group{}, err
+	}
 	return g, nil
 }
 func (s *Service) DeleteGroup(ctx context.Context, id uuid.UUID) error {
 	if err := s.groups.DeleteGroup(ctx, id); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "group_deleted", TargetType: "group", TargetID: id.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "group_deleted", TargetType: "group", TargetID: id.String()})
 }
 func (s *Service) ListGroupRoles(ctx context.Context, groupID uuid.UUID) ([]Role, error) {
 	return s.groups.ListGroupRoles(ctx, groupID)
@@ -88,15 +91,13 @@ func (s *Service) AssignRoleToGroup(ctx context.Context, groupID, roleID uuid.UU
 	if err := s.groups.AssignRoleToGroup(ctx, groupID, roleID); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "group_role_assigned", TargetType: "group", TargetID: groupID.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "group_role_assigned", TargetType: "group", TargetID: groupID.String()})
 }
 func (s *Service) RemoveRoleFromGroup(ctx context.Context, groupID, roleID uuid.UUID) error {
 	if err := s.groups.RemoveRoleFromGroup(ctx, groupID, roleID); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "group_role_removed", TargetType: "group", TargetID: groupID.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "group_role_removed", TargetType: "group", TargetID: groupID.String()})
 }
 func (s *Service) ListUserGroups(ctx context.Context, userID uuid.UUID) ([]Group, error) {
 	return s.groups.ListUserGroups(ctx, userID)
@@ -105,13 +106,11 @@ func (s *Service) AssignGroupToUser(ctx context.Context, userID, groupID uuid.UU
 	if err := s.groups.AssignGroupToUser(ctx, userID, groupID, "manual"); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "group_assigned", TargetType: "user", TargetID: userID.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "group_assigned", TargetType: "user", TargetID: userID.String()})
 }
 func (s *Service) RemoveGroupFromUser(ctx context.Context, userID, groupID uuid.UUID) error {
 	if err := s.groups.RemoveGroupFromUser(ctx, userID, groupID); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "group_removed", TargetType: "user", TargetID: userID.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "group_removed", TargetType: "user", TargetID: userID.String()})
 }

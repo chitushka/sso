@@ -3,9 +3,10 @@ package users
 import (
 	"context"
 	"errors"
+	"strings"
+
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/google/uuid"
-	"strings"
 )
 
 type PasswordHasher interface {
@@ -67,7 +68,9 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput, ip, ua string)
 	if err != nil {
 		return User{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "user_created", TargetType: "user", TargetID: u.ID.String(), IP: ip, UserAgent: ua})
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "user_created", TargetType: "user", TargetID: u.ID.String(), IP: ip, UserAgent: ua}); err != nil {
+		return User{}, err
+	}
 	return u, nil
 }
 func (s *Service) List(ctx context.Context, limit, offset int) ([]User, error) {
@@ -83,7 +86,14 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (User, error) {
 	return s.repo.FindByID(ctx, id)
 }
 func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateUserInput) (User, error) {
-	return s.repo.Update(ctx, User{ID: id, Username: in.Username, Email: in.Email, Status: in.Status, FirstName: in.FirstName, LastName: in.LastName, Attributes: in.Attributes})
+	u, err := s.repo.Update(ctx, User{ID: id, Username: in.Username, Email: in.Email, Status: in.Status, FirstName: in.FirstName, LastName: in.LastName, Attributes: in.Attributes})
+	if err != nil {
+		return User{}, err
+	}
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "user_updated", TargetType: "user", TargetID: id.String()}); err != nil {
+		return User{}, err
+	}
+	return u, nil
 }
 
 // Delete is a soft delete: the row is kept for audit/FK integrity, the status
@@ -102,8 +112,7 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID, ip, ua string) error
 	if s.tokenCache != nil {
 		s.tokenCache.Invalidate(id)
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "user_deleted", TargetType: "user", TargetID: id.String(), IP: ip, UserAgent: ua})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "user_deleted", TargetType: "user", TargetID: id.String(), IP: ip, UserAgent: ua})
 }
 func (s *Service) SetPassword(ctx context.Context, id uuid.UUID, password string) error {
 	if err := ValidatePassword(password); err != nil {

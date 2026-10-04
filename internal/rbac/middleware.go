@@ -1,8 +1,10 @@
 package rbac
 
 import (
+	"net"
 	"net/http"
 
+	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/httpx"
 	"github.com/google/uuid"
@@ -30,7 +32,12 @@ func RequirePermission(repo Repository, resource, action string) func(http.Handl
 				httpx.Error(w, http.StatusForbidden, "permission denied")
 				return
 			}
-			next.ServeHTTP(w, r)
+			ip := r.RemoteAddr
+			if host, _, splitErr := net.SplitHostPort(r.RemoteAddr); splitErr == nil {
+				ip = host
+			}
+			ctx := audit.WithRequestContext(r.Context(), userID, ip, r.UserAgent())
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

@@ -40,7 +40,9 @@ func (s *Service) CreateRole(ctx context.Context, in CreateRoleInput) (Role, err
 	if err != nil {
 		return Role{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "role_created", TargetType: "role", TargetID: role.ID.String()})
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "role_created", TargetType: "role", TargetID: role.ID.String()}); err != nil {
+		return Role{}, err
+	}
 	return role, nil
 }
 
@@ -60,7 +62,9 @@ func (s *Service) UpdateRole(ctx context.Context, id uuid.UUID, in UpdateRoleInp
 	if err != nil {
 		return Role{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "role_updated", TargetType: "role", TargetID: role.ID.String()})
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "role_updated", TargetType: "role", TargetID: role.ID.String()}); err != nil {
+		return Role{}, err
+	}
 	return role, nil
 }
 
@@ -75,38 +79,33 @@ func (s *Service) DeleteRole(ctx context.Context, id uuid.UUID) error {
 	if err := s.repo.DeleteRole(ctx, id); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "role_deleted", TargetType: "role", TargetID: id.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "role_deleted", TargetType: "role", TargetID: id.String()})
 }
 
 func (s *Service) AssignRoleToUser(ctx context.Context, userID, roleID uuid.UUID) error {
 	if err := s.repo.AssignRoleToUser(ctx, userID, roleID); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "role_assigned", TargetType: "user", TargetID: userID.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "role_assigned", TargetType: "user", TargetID: userID.String()})
 }
 
 func (s *Service) RemoveRoleFromUser(ctx context.Context, userID, roleID uuid.UUID) error {
 	if err := s.repo.RemoveRoleFromUser(ctx, userID, roleID); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "role_removed", TargetType: "user", TargetID: userID.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "role_removed", TargetType: "user", TargetID: userID.String()})
 }
 
 func (s *Service) AssignPermissionToRole(ctx context.Context, roleID, permissionID uuid.UUID) error {
 	if err := s.repo.AssignPermissionToRole(ctx, roleID, permissionID); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "permission_assigned", TargetType: "role", TargetID: roleID.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "permission_assigned", TargetType: "role", TargetID: roleID.String()})
 }
 
 func (s *Service) RemovePermissionFromRole(ctx context.Context, roleID, permissionID uuid.UUID) error {
 	if err := s.repo.RemovePermissionFromRole(ctx, roleID, permissionID); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "permission_removed", TargetType: "role", TargetID: roleID.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "permission_removed", TargetType: "role", TargetID: roleID.String()})
 }

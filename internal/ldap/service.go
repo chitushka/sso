@@ -2,6 +2,7 @@ package ldap
 
 import (
 	"context"
+
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/google/uuid"
@@ -32,7 +33,14 @@ func (s *Service) Create(ctx context.Context, p Provider) (Provider, error) {
 	if p.DisplayNameAttribute == "" {
 		p.DisplayNameAttribute = "displayName"
 	}
-	return s.repo.Create(ctx, p)
+	out, err := s.repo.Create(ctx, p)
+	if err != nil {
+		return Provider{}, err
+	}
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "ldap_provider_created", TargetType: "ldap_provider", TargetID: out.ID.String()}); err != nil {
+		return Provider{}, err
+	}
+	return out, nil
 }
 func (s *Service) List(ctx context.Context) ([]Provider, error) { return s.repo.List(ctx) }
 func (s *Service) Test(ctx context.Context, p Provider) error   { return s.client.TestConnection(ctx, p) }
@@ -47,34 +55,38 @@ func (s *Service) Update(ctx context.Context, p Provider) (Provider, error) {
 		p.BindPassword = current.BindPassword
 	}
 	out, err := s.repo.Update(ctx, p)
-	if err == nil {
-		_ = s.audit.Write(ctx, audit.Event{Action: "ldap_provider_updated", TargetType: "ldap_provider", TargetID: out.ID.String()})
+	if err != nil {
+		return Provider{}, err
 	}
-	return out, err
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "ldap_provider_updated", TargetType: "ldap_provider", TargetID: out.ID.String()}); err != nil {
+		return Provider{}, err
+	}
+	return out, nil
 }
 func (s *Service) ListGroupMappings(ctx context.Context, providerID uuid.UUID) ([]GroupMapping, error) {
 	return s.repo.ListGroupMappings(ctx, providerID)
 }
 func (s *Service) CreateGroupMapping(ctx context.Context, m GroupMapping) (GroupMapping, error) {
 	out, err := s.repo.CreateGroupMapping(ctx, m)
-	if err == nil {
-		_ = s.audit.Write(ctx, audit.Event{Action: "ldap_group_mapping_created", TargetType: "ldap_provider", TargetID: m.ProviderID.String()})
+	if err != nil {
+		return GroupMapping{}, err
 	}
-	return out, err
+	if err := audit.Write(ctx, s.audit, audit.Event{Action: "ldap_group_mapping_created", TargetType: "ldap_provider", TargetID: m.ProviderID.String()}); err != nil {
+		return GroupMapping{}, err
+	}
+	return out, nil
 }
 func (s *Service) DeleteGroupMapping(ctx context.Context, id uuid.UUID) error {
-	err := s.repo.DeleteGroupMapping(ctx, id)
-	if err == nil {
-		_ = s.audit.Write(ctx, audit.Event{Action: "ldap_group_mapping_deleted", TargetType: "ldap_group_mapping", TargetID: id.String()})
+	if err := s.repo.DeleteGroupMapping(ctx, id); err != nil {
+		return err
 	}
-	return err
+	return audit.Write(ctx, s.audit, audit.Event{Action: "ldap_group_mapping_deleted", TargetType: "ldap_group_mapping", TargetID: id.String()})
 }
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return err
 	}
-	_ = s.audit.Write(ctx, audit.Event{Action: "ldap_provider_deleted", TargetType: "ldap_provider", TargetID: id.String()})
-	return nil
+	return audit.Write(ctx, s.audit, audit.Event{Action: "ldap_provider_deleted", TargetType: "ldap_provider", TargetID: id.String()})
 }
 
 // GroupSyncer maps directory groups seen at login onto SSO groups
