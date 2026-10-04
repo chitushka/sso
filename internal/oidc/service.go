@@ -47,9 +47,7 @@ type Service struct {
 }
 
 func NewService(issuer string, keys KeyStore) *Service {
-	client := &http.Client{Timeout: 10 * time.Second}
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Service{issuer: strings.TrimRight(issuer, "/"), keys: keys, client: client, accessTTL: 15 * time.Minute}
+	return &Service{issuer: strings.TrimRight(issuer, "/"), keys: keys, client: newBackchannelHTTPClient(), accessTTL: 15 * time.Minute}
 }
 
 func (s *Service) WithAccessTokenTTL(ttl time.Duration) *Service {

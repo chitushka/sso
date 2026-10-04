@@ -95,6 +95,9 @@ func (s *Service) CreateClient(ctx context.Context, in CreateClientInput) (Creat
 	if in.Type == "" {
 		in.Type = ClientConfidential
 	}
+	if err := validateClientURLs(in.Type, in.RedirectURIs, in.PostLogoutRedirectURIs, in.BackchannelLogoutURI); err != nil {
+		return CreateClientResult{}, err
+	}
 	c, sec, err := s.repo.CreateClient(ctx, Client{ClientID: in.ClientID, Name: in.Name, Type: in.Type, RedirectURIs: nonNil(in.RedirectURIs), AllowedScopes: nonNil(in.AllowedScopes), PostLogoutRedirectURIs: nonNil(in.PostLogoutRedirectURIs), BackchannelLogoutURI: in.BackchannelLogoutURI, SkipConsent: in.SkipConsent, Enabled: in.Enabled})
 	if err != nil {
 		return CreateClientResult{}, err
@@ -120,6 +123,13 @@ type UpdateClientInput struct {
 }
 
 func (s *Service) UpdateClient(ctx context.Context, id uuid.UUID, in UpdateClientInput) (Client, error) {
+	current, err := s.repo.FindClientByID(ctx, id)
+	if err != nil {
+		return Client{}, err
+	}
+	if err := validateClientURLs(current.Type, in.RedirectURIs, in.PostLogoutRedirectURIs, in.BackchannelLogoutURI); err != nil {
+		return Client{}, err
+	}
 	c, err := s.repo.UpdateClient(ctx, Client{ID: id, Name: in.Name, RedirectURIs: nonNil(in.RedirectURIs), AllowedScopes: nonNil(in.AllowedScopes), PostLogoutRedirectURIs: nonNil(in.PostLogoutRedirectURIs), BackchannelLogoutURI: in.BackchannelLogoutURI, SkipConsent: in.SkipConsent, Enabled: in.Enabled})
 	if err != nil {
 		return Client{}, err

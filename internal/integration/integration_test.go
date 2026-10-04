@@ -212,14 +212,14 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if resp := doJSON(t, "POST", "/api/v1/oauth/clients", admin.credential(), map[string]any{
 		"client_id": "test-app", "name": "Test App", "type": "confidential",
-		"redirect_uris": []string{"http://localhost/cb"}, "allowed_scopes": []string{"openid", "profile", "email"},
+		"redirect_uris": []string{"https://client.example/cb"}, "allowed_scopes": []string{"openid", "profile", "email"},
 		"skip_consent": true, "enabled": true,
 	}, &created); resp.StatusCode != 201 || created.ClientSecret == "" {
 		t.Fatalf("create client: %d %+v", resp.StatusCode, created)
 	}
 
 	// 5. Authorization code flow with the session cookie.
-	q := url.Values{"response_type": {"code"}, "client_id": {"test-app"}, "redirect_uri": {"http://localhost/cb"}, "scope": {"openid profile"}, "state": {"xyz"}, "nonce": {"n1"}}
+	q := url.Values{"response_type": {"code"}, "client_id": {"test-app"}, "redirect_uri": {"https://client.example/cb"}, "scope": {"openid profile"}, "state": {"xyz"}, "nonce": {"n1"}}
 	req, _ := http.NewRequest("GET", server.URL+"/oauth2/authorize?"+q.Encode(), nil)
 	req.AddCookie(&http.Cookie{Name: "sso_session", Value: admin.SessionToken})
 	resp, err := client.Do(req)
@@ -247,7 +247,7 @@ func TestEndToEnd(t *testing.T) {
 		_ = json.NewDecoder(res.Body).Decode(&m)
 		return res.StatusCode, m
 	}
-	status, tok := tokenReq(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {"http://localhost/cb"}, "client_id": {"test-app"}, "client_secret": {created.ClientSecret}})
+	status, tok := tokenReq(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {"https://client.example/cb"}, "client_id": {"test-app"}, "client_secret": {created.ClientSecret}})
 	if status != 200 || tok["access_token"] == "" || tok["refresh_token"] == "" || tok["id_token"] == "" {
 		t.Fatalf("token exchange: %d %v", status, tok)
 	}

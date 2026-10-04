@@ -76,6 +76,10 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			out, err := svc.CreateClient(r.Context(), req)
 			if err != nil {
+				if errors.Is(err, ErrInvalidClientMetadata) {
+					httpx.Error(w, 400, err.Error())
+					return
+				}
 				httpx.Error(w, 500, "failed to create client")
 				return
 			}
@@ -111,6 +115,10 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			out, err := svc.UpdateClient(r.Context(), id, req)
 			if err != nil {
+				if errors.Is(err, ErrInvalidClientMetadata) {
+					httpx.Error(w, 400, err.Error())
+					return
+				}
 				if errors.Is(err, storage.ErrNotFound) {
 					httpx.Error(w, 404, "client not found")
 					return
