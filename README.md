@@ -14,7 +14,7 @@ The binary serves plain HTTP and must run behind a TLS-terminating reverse proxy
 - `docker-compose.prod.yml` runs only the hardened application container: read-only root filesystem, all Linux capabilities dropped, no host ports, and a pre-created private ingress network.
 - Production uses externally managed PostgreSQL with `sslmode=require`, `verify-ca`, or preferably `verify-full`. Configure external LDAP providers with LDAPS or StartTLS.
 
-Operational endpoints: `GET /health/live`, `GET /health/ready` (checks the DB), `GET /health/version`, `GET /metrics` (Prometheus text format).
+Operational endpoints: `GET /health/live`, `GET /health/ready` (checks database connectivity and the embedded migration version), `GET /health/version`, and authenticated `GET /metrics` (requires the `metrics:read` permission).
 
 Production-oriented SSO/IdP prototype written in Go.
 
@@ -61,7 +61,7 @@ Release 0.5.1 standardizes all application environment variables under the `SSO_
 | `SSO_MIGRATE_ON_START` | No | `false` | Apply embedded DB migrations on startup. |
 | `SSO_TRUSTED_PROXIES` | No | — | Comma-separated CIDRs/IPs of reverse proxies allowed to set `X-Forwarded-For`. Empty = trust none. |
 | `SSO_JWT_SECRET` | Yes | `change-me-please-change-me-please-change-me` | HMAC secret for short-lived broker state. Access, MFA and OIDC tokens use rotating RSA keys stored encrypted in PostgreSQL. Must be at least 32 characters. |
-| `SSO_ENCRYPTION_KEY` | Yes | `change-me-please-change-me-please-change-me` | Key for encrypting stored secrets (LDAP bind passwords) with AES-256-GCM. Must be at least 32 characters. |
+| `SSO_ENCRYPTION_KEY` | Yes | `change-me-please-change-me-please-change-me` | Key for encrypting LDAP, MFA, broker and OIDC private-key material with AES-256-GCM. Must be at least 32 characters. Do not replace it directly; use the rotation procedure below. |
 | `SSO_ACCESS_TOKEN_TTL` | No | `15m` | Access token lifetime. |
 | `SSO_SESSION_TTL` | No | `720h` | Session lifetime. |
 | `SSO_REFRESH_TOKEN_TTL` | No | `720h` | OAuth2 refresh token lifetime. |
@@ -194,7 +194,17 @@ Run migrations before testing v0.5.1.
 
 - The token endpoint now verifies the confidential client secret (Argon2id). Both `client_secret_post` and `client_secret_basic` are supported; invalid credentials return `401 invalid_client`.
 - Requested scopes are validated against the client's `allowed_scopes`; unknown scopes are rejected with `invalid_scope`.
-- LDAP bind passwords, MFA seeds and broker client secrets are encrypted at rest with AES-256-GCM using `SSO_ENCRYPTION_KEY`. Unversioned plaintext values are rejected.
+- LDAP bind passwords, MFA seeds, broker client secrets and OIDC signing private keys are encrypted at rest with AES-256-GCM using `SSO_ENCRYPTION_KEY`. Unversioned plaintext values are rejected, and startup verifies an encrypted database key sentinel.
+
+### Rotating `SSO_ENCRYPTION_KEY`
+
+Rotation is an offline, transactional maintenance operation. Back up PostgreSQL first, stop every API replica, and ensure all migrations are applied. Keep the current key in `SSO_ENCRYPTION_KEY`, provide a new independent key through `SSO_NEW_ENCRYPTION_KEY`, then run:
+
+```sh
+/app/sso-api rotate-encryption-key
+```
+
+The command verifies the current key, locks all affected tables, and atomically re-encrypts LDAP passwords, MFA seeds, broker secrets, OIDC private keys and the key verifier. If any value cannot be decrypted or updated, the transaction rolls back. After success, replace `SSO_ENCRYPTION_KEY` with the new value, unset `SSO_NEW_ENCRYPTION_KEY`, and only then restart all replicas. Never run old- and new-key API instances concurrently.
 - OIDC signing keys rotate automatically; the previous key remains in JWKS during the verification grace period.
 - Invalid duration/boolean configuration values now fail startup with a clear error instead of panicking.
 
@@ -285,7 +295,7 @@ Deferred (no consumer yet): SAML 2.0, SCIM, token exchange.
 - **Integration tests** (`internal/integration`, build tag `integration`): reset schema → migrate → bootstrap → login → OAuth2 code flow with refresh rotation and reuse detection → RBAC enforcement, end-to-end over HTTP against Postgres.
 - **Linting**: `.golangci.yml` (errcheck, govet, staticcheck, unused, ineffassign, gosec, misspell, unconvert), wired into CI.
 - **Trusted-proxy-aware client IP**: `RealIP` middleware resolves `X-Forwarded-For` only from `SSO_TRUSTED_PROXIES`, closing the brute-force/rate-limit bypass.
-- **Observability**: `/metrics` (Prometheus text format: request counts by route/status, in-flight gauge, duration sum) and `/health/version`.
+- **Observability**: `/metrics` requires an authenticated principal with `metrics:read`; `/health/ready` rejects unavailable, dirty or outdated database schemas; `/health/version` remains public.
 - **Ops hardening**: docker-compose gained a Postgres healthcheck with `depends_on: condition`, `restart: unless-stopped`, migrate-on-start, and secrets via env interpolation instead of hardcoded values. Binary version is injected with `-ldflags -X main.version`.
 
 ## Release 1.1 - Security Hardening

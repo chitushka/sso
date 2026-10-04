@@ -34,9 +34,9 @@ type SigningKey struct {
 }
 type KeyStore interface {
 	ActiveKey(ctx context.Context) (SigningKey, error)
-	Create(ctx context.Context, k SigningKey) (SigningKey, error)
+	EnsureActive(ctx context.Context, candidate SigningKey) (SigningKey, error)
+	Rotate(ctx context.Context, currentID uuid.UUID, candidate SigningKey, retiringExpiresAt time.Time) error
 	PublicKeys(ctx context.Context) ([]SigningKey, error)
-	MarkRetiring(ctx context.Context, id uuid.UUID, expiresAt time.Time) error
 	RetireExpired(ctx context.Context) error
 }
 type Service struct {
@@ -44,10 +44,11 @@ type Service struct {
 	keys      KeyStore
 	client    *http.Client
 	accessTTL time.Duration
+	newKey    func() (SigningKey, error)
 }
 
 func NewService(issuer string, keys KeyStore) *Service {
-	return &Service{issuer: strings.TrimRight(issuer, "/"), keys: keys, client: newBackchannelHTTPClient(), accessTTL: 15 * time.Minute}
+	return &Service{issuer: strings.TrimRight(issuer, "/"), keys: keys, client: newBackchannelHTTPClient(), accessTTL: 15 * time.Minute, newKey: generateSigningKey}
 }
 
 func (s *Service) WithAccessTokenTTL(ttl time.Duration) *Service {
@@ -75,17 +76,21 @@ func (s *Service) EnsureActiveKey(ctx context.Context) error {
 	if !errors.Is(err, storage.ErrNotFound) {
 		return err
 	}
-	return s.generateActiveKey(ctx)
-}
-func (s *Service) generateActiveKey(ctx context.Context) error {
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	candidate, err := s.newKey()
 	if err != nil {
 		return err
 	}
+	_, err = s.keys.EnsureActive(ctx, candidate)
+	return err
+}
+func generateSigningKey() (SigningKey, error) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return SigningKey{}, err
+	}
 	prv := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
 	pub := pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: x509.MarshalPKCS1PublicKey(&priv.PublicKey)})
-	_, err = s.keys.Create(ctx, SigningKey{Kid: uuid.NewString(), Alg: "RS256", PrivateKeyPEM: string(prv), PublicKeyPEM: string(pub), Status: "active"})
-	return err
+	return SigningKey{Kid: uuid.NewString(), Alg: "RS256", PrivateKeyPEM: string(prv), PublicKeyPEM: string(pub), Status: "active"}, nil
 }
 func (s *Service) RotateIfNeeded(ctx context.Context) error {
 	if err := s.keys.RetireExpired(ctx); err != nil {
@@ -93,7 +98,7 @@ func (s *Service) RotateIfNeeded(ctx context.Context) error {
 	}
 	k, err := s.keys.ActiveKey(ctx)
 	if errors.Is(err, storage.ErrNotFound) {
-		return s.generateActiveKey(ctx)
+		return s.EnsureActiveKey(ctx)
 	}
 	if err != nil {
 		return err
@@ -101,14 +106,15 @@ func (s *Service) RotateIfNeeded(ctx context.Context) error {
 	if time.Since(k.CreatedAt) < keyMaxAge {
 		return nil
 	}
+	candidate, err := s.newKey()
+	if err != nil {
+		return err
+	}
 	grace := retireGrace
 	if minimum := s.accessTTL + time.Minute; minimum > grace {
 		grace = minimum
 	}
-	if err := s.keys.MarkRetiring(ctx, k.ID, time.Now().Add(grace)); err != nil {
-		return err
-	}
-	return s.generateActiveKey(ctx)
+	return s.keys.Rotate(ctx, k.ID, candidate, time.Now().Add(grace))
 }
 
 // StartRotation runs the rotation check in the background until ctx is cancelled.

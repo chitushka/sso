@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -24,13 +25,35 @@ func (f *fakeKeyStore) ActiveKey(_ context.Context) (SigningKey, error) {
 	}
 	return SigningKey{}, storage.ErrNotFound
 }
-func (f *fakeKeyStore) Create(_ context.Context, k SigningKey) (SigningKey, error) {
+func (f *fakeKeyStore) EnsureActive(_ context.Context, k SigningKey) (SigningKey, error) {
+	if active, err := f.ActiveKey(context.Background()); err == nil {
+		return active, nil
+	}
 	k.ID = uuid.New()
 	if k.CreatedAt.IsZero() {
 		k.CreatedAt = time.Now()
 	}
 	f.keys = append(f.keys, k)
 	return k, nil
+}
+func (f *fakeKeyStore) Rotate(_ context.Context, currentID uuid.UUID, k SigningKey, expiresAt time.Time) error {
+	for i := range f.keys {
+		if f.keys[i].Status == "active" && f.keys[i].ID != currentID {
+			return nil
+		}
+	}
+	k.ID = uuid.New()
+	k.CreatedAt = time.Now()
+	for i := range f.keys {
+		if f.keys[i].ID == currentID && f.keys[i].Status == "active" {
+			f.keys[i].Status = "retiring"
+			f.keys[i].ExpiresAt = &expiresAt
+			f.keys = append(f.keys, k)
+			return nil
+		}
+	}
+	f.keys = append(f.keys, k)
+	return nil
 }
 func (f *fakeKeyStore) PublicKeys(_ context.Context) ([]SigningKey, error) {
 	out := []SigningKey{}
@@ -40,15 +63,6 @@ func (f *fakeKeyStore) PublicKeys(_ context.Context) ([]SigningKey, error) {
 		}
 	}
 	return out, nil
-}
-func (f *fakeKeyStore) MarkRetiring(_ context.Context, id uuid.UUID, expiresAt time.Time) error {
-	for i := range f.keys {
-		if f.keys[i].ID == id {
-			f.keys[i].Status = "retiring"
-			f.keys[i].ExpiresAt = &expiresAt
-		}
-	}
-	return nil
 }
 func (f *fakeKeyStore) RetireExpired(_ context.Context) error {
 	now := time.Now()
@@ -108,6 +122,57 @@ func TestRotateIfNeededRotatesOldKey(t *testing.T) {
 	pub, _ := ks.PublicKeys(context.Background())
 	if len(pub) != 2 {
 		t.Fatalf("old key must stay in JWKS while retiring, got %d keys", len(pub))
+	}
+}
+
+func TestRotateIfNeededKeepsOldKeyActiveWhenGenerationFails(t *testing.T) {
+	ks := &fakeKeyStore{}
+	svc := NewService("http://localhost:8080", ks)
+	if err := svc.EnsureActiveKey(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ks.keys[0].CreatedAt = time.Now().Add(-31 * 24 * time.Hour)
+	old := ks.keys[0].ID
+	svc.newKey = func() (SigningKey, error) { return SigningKey{}, errors.New("entropy unavailable") }
+	if err := svc.RotateIfNeeded(context.Background()); err == nil {
+		t.Fatal("expected key generation failure")
+	}
+	active, err := ks.ActiveKey(context.Background())
+	if err != nil || active.ID != old {
+		t.Fatalf("old key must remain active: key=%+v err=%v", active, err)
+	}
+}
+
+func TestConcurrentRotationWithStaleCurrentKeyIsNoOp(t *testing.T) {
+	ks := &fakeKeyStore{}
+	svc := NewService("http://localhost:8080", ks)
+	if err := svc.EnsureActiveKey(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := ks.ActiveKey(context.Background())
+	first, err := generateSigningKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := generateSigningKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().Add(retireGrace)
+	if err := ks.Rotate(context.Background(), old.ID, first, expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := ks.Rotate(context.Background(), old.ID, second, expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	active := 0
+	for _, key := range ks.keys {
+		if key.Status == "active" {
+			active++
+		}
+	}
+	if active != 1 || len(ks.keys) != 2 {
+		t.Fatalf("stale rotation created duplicate keys: %+v", ks.keys)
 	}
 }
 

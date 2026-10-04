@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -57,6 +58,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	rbacSvc := rbac.NewService(rbacRepo, auditRepo).WithGroups(rbacRepo)
 	passwords := auth.NewArgon2idHasher()
 	encryptor := secrets.NewAESGCM(cfg.Security.EncryptionKey)
+	if err := secrets.EnsureDatabaseKey(ctx, pool, encryptor); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("verify database encryption key: %w", err)
+	}
 	oidcKeys := oidc.NewPostgresKeyStore(pool, encryptor)
 	oidcSvc := oidc.NewService(cfg.OIDC.Issuer, oidcKeys).WithAccessTokenTTL(cfg.Token.AccessTTL)
 	if err := oidcSvc.EnsureActiveKey(ctx); err != nil {
@@ -100,7 +105,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 		"/oauth2/revoke",
 		"/oauth2/introspect",
 		"/api/v1/bootstrap"))
-	r.Get("/metrics", metrics.Expose)
 	health.RegisterRoutes(r, pool, version)
 	require := func(resource, action string) func(http.Handler) http.Handler {
 		return rbac.RequirePermission(rbacRepo, resource, action)
@@ -108,6 +112,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	// One Bearer middleware for every protected router, sharing the access-state
 	// cache so blocks and "sign out everywhere" are honoured consistently.
 	bearer := auth.ProtectedAuth(tokens, sessionRepo, userRepo, accessCache)
+	r.With(bearer, require("metrics", "read")).Get("/metrics", metrics.Expose)
 	bootstrap.RegisterRoutes(r, bootstrapSvc)
 	auth.RegisterRoutes(r, authSvc, userRepo, sessionRepo, tokens, accessCache)
 	users.RegisterRoutes(r, userSvc, bearer, require)

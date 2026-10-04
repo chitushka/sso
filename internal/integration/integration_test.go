@@ -17,11 +17,14 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/chitushka/sso/internal/app"
 	"github.com/chitushka/sso/internal/config"
+	"github.com/chitushka/sso/internal/oidc"
+	"github.com/chitushka/sso/internal/secrets"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -128,6 +131,9 @@ func TestEndToEnd(t *testing.T) {
 	if resp := doJSON(t, "GET", "/health/ready", "", nil, nil); resp.StatusCode != 200 {
 		t.Fatalf("health: %d", resp.StatusCode)
 	}
+	if resp := doJSON(t, "GET", "/metrics", "", nil, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("public metrics must be denied, got %d", resp.StatusCode)
+	}
 	var disco map[string]any
 	if resp := doJSON(t, "GET", "/.well-known/openid-configuration", "", nil, &disco); resp.StatusCode != 200 || disco["issuer"] == "" {
 		t.Fatalf("discovery failed: %d %v", resp.StatusCode, disco)
@@ -162,9 +168,13 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
+	bindPassword, err := secrets.NewAESGCM("integration-test-enc-key-32chars-ok!").Encrypt("directory-password")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var providerID uuid.UUID
 	err = pool.QueryRow(context.Background(), `INSERT INTO ldap_providers
-		(name,host,bind_dn,bind_password,base_dn) VALUES('test','ldap','cn=x','encrypted','dc=example') RETURNING id`).Scan(&providerID)
+		(name,host,bind_dn,bind_password,base_dn) VALUES('test','ldap','cn=x',$1,'dc=example') RETURNING id`, bindPassword).Scan(&providerID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,6 +210,9 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if resp := doJSON(t, "POST", "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "wrong"}, nil); resp.StatusCode != 401 {
 		t.Fatalf("wrong password must 401, got %d", resp.StatusCode)
+	}
+	if resp := doJSON(t, "GET", "/metrics", admin.credential(), nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin metrics request failed: %d", resp.StatusCode)
 	}
 
 	// 4. Create a confidential OAuth client (skip_consent for a headless flow).
@@ -293,7 +306,83 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("admin must list users, got %d", resp.StatusCode)
 	}
 
-	// 8. Migrations are idempotent on restart (MigrateOnStart with no changes).
+	// 8. Two instances racing to rotate an old signing key must commit exactly
+	// one replacement and keep exactly one active key.
+	if _, err := pool.Exec(context.Background(), `UPDATE oidc_signing_keys SET created_at=now()-interval '31 days' WHERE status='active'`); err != nil {
+		t.Fatal(err)
+	}
+	oldEncryptor := secrets.NewAESGCM("integration-test-enc-key-32chars-ok!")
+	rotationServices := []*oidc.Service{
+		oidc.NewService("http://localhost:8080", oidc.NewPostgresKeyStore(pool, oldEncryptor)),
+		oidc.NewService("http://localhost:8080", oidc.NewPostgresKeyStore(pool, oldEncryptor)),
+	}
+	var rotationWG sync.WaitGroup
+	rotationErrors := make(chan error, len(rotationServices))
+	for _, service := range rotationServices {
+		rotationWG.Add(1)
+		go func() {
+			defer rotationWG.Done()
+			rotationErrors <- service.RotateIfNeeded(context.Background())
+		}()
+	}
+	rotationWG.Wait()
+	close(rotationErrors)
+	for err := range rotationErrors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var activeKeys, publishedKeys int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FILTER (WHERE status='active'),count(*) FILTER (WHERE status IN ('active','retiring')) FROM oidc_signing_keys`).Scan(&activeKeys, &publishedKeys); err != nil {
+		t.Fatal(err)
+	}
+	if activeKeys != 1 || publishedKeys != 2 {
+		t.Fatalf("concurrent rotation left active=%d published=%d", activeKeys, publishedKeys)
+	}
+
+	// 9. Offline encryption-key rotation re-encrypts every secret class and
+	// rejects the old key afterwards.
+	mfaCiphertext, err := oldEncryptor.Encrypt("mfa-seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `UPDATE users SET mfa_secret=$2 WHERE id=$1`, localAdmin.ID, mfaCiphertext); err != nil {
+		t.Fatal(err)
+	}
+	brokerCiphertext, err := oldEncryptor.Encrypt("broker-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `INSERT INTO identity_providers(code,name,type,client_id,client_secret,authorize_url,token_url,userinfo_url,enabled) VALUES('rotation-test','Rotation Test','oidc','rotation-client',$1,'https://idp.example/authorize','https://idp.example/token','https://idp.example/userinfo',true)`, brokerCiphertext); err != nil {
+		t.Fatal(err)
+	}
+	server.Close()
+	newEncryptor := secrets.NewAESGCM("integration-test-new-enc-key-32chars!")
+	if err := secrets.RotateDatabaseKey(context.Background(), pool, oldEncryptor, newEncryptor); err != nil {
+		t.Fatal(err)
+	}
+	if err := secrets.EnsureDatabaseKey(context.Background(), pool, oldEncryptor); err == nil {
+		t.Fatal("old encryption key still passed database verification")
+	}
+	if err := secrets.EnsureDatabaseKey(context.Background(), pool, newEncryptor); err != nil {
+		t.Fatalf("new encryption key verification failed: %v", err)
+	}
+	for name, query := range map[string]string{
+		"ldap":   `SELECT bind_password FROM ldap_providers WHERE id='` + providerID.String() + `'`,
+		"broker": `SELECT client_secret FROM identity_providers WHERE code='rotation-test'`,
+		"mfa":    `SELECT mfa_secret FROM users WHERE id='` + localAdmin.ID.String() + `'`,
+		"oidc":   `SELECT private_key_pem FROM oidc_signing_keys WHERE status='active'`,
+	} {
+		var ciphertext string
+		if err := pool.QueryRow(context.Background(), query).Scan(&ciphertext); err != nil {
+			t.Fatalf("load rotated %s secret: %v", name, err)
+		}
+		if _, err := newEncryptor.Decrypt(ciphertext); err != nil {
+			t.Fatalf("decrypt rotated %s secret: %v", name, err)
+		}
+	}
+
+	// 10. Migrations are idempotent on restart (MigrateOnStart with no changes).
 	if !strings.Contains(server.URL, "http://") {
 		t.Fatal("sanity")
 	}
