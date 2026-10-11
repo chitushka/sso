@@ -1,6 +1,7 @@
 package ldap
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -33,9 +34,9 @@ func TestValidateProviderTransport(t *testing.T) {
 
 func TestProductionClientRejectsPlainLDAPBeforeDial(t *testing.T) {
 	client := NewClient().WithTLSRequired(true)
-	conn, err := client.dial(Provider{Host: "127.0.0.1", Port: 389})
+	conn, err := client.dial(context.Background(), Provider{Host: "127.0.0.1", Port: 389})
 	if conn != nil {
-		_ = conn.Close()
+		conn.Close()
 		t.Fatal("unexpected plaintext LDAP connection")
 	}
 	if !errors.Is(err, ErrTLSRequired) {
