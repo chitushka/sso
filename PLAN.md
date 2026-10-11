@@ -4,15 +4,6 @@
 
 ## P0 — безопасность и корректность учётных данных
 
-### Закрыть SSRF в identity broker
-
-`internal/broker/service.go` использует обычный `http.Client` для настраиваемых token/UserInfo URL. В отличие от back-channel logout, обращения не блокируют loopback, link-local, private и зарезервированные адреса и допускают DNS rebinding.
-
-- Переиспользовать безопасный DialContext из `internal/oidc/outbound.go` или вынести общий клиент в `internal/netx`.
-- Отключить proxy и redirects, проверять все DNS-ответы и фактический адрес подключения.
-- Если нужны внутренние корпоративные IdP, добавить явный ограниченный allowlist CIDR с fail-closed валидацией.
-- Добавить тесты для IPv4/IPv6, DNS rebinding, redirect и proxy.
-
 ### Добавить дедлайны и отмену LDAP
 
 `internal/ldap/client.go` принимает `context.Context`, но не использует его: dial, bind и search не имеют конечного deadline и могут зависнуть.

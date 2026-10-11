@@ -15,6 +15,7 @@ import (
 
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
+	"github.com/chitushka/sso/internal/netx"
 	"github.com/chitushka/sso/internal/storage"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/google/uuid"
@@ -40,8 +41,7 @@ type Service struct {
 }
 
 func NewService(repo Repository, usersRepo users.Repository, authSvc *auth.Service, aud audit.Repository, issuer string, stateSecret []byte) *Service {
-	client := &http.Client{Timeout: 10 * time.Second}
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	client := netx.NewSafeHTTPClient(10 * time.Second)
 	return &Service{repo: repo, users: usersRepo, auth: authSvc, audit: aud, issuer: issuer, stateSecret: stateSecret, client: client}
 }
 
@@ -222,10 +222,10 @@ func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (e
 	if err != nil {
 		return externalIdentity{}, err
 	}
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return externalIdentity{}, fmt.Errorf("token exchange failed: %s", resp.Status)
 	}
-	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var tok struct {
 		AccessToken string `json:"access_token"`
@@ -243,10 +243,10 @@ func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (e
 	if err != nil {
 		return externalIdentity{}, err
 	}
+	defer func() { _ = uresp.Body.Close() }()
 	if uresp.StatusCode < 200 || uresp.StatusCode >= 300 {
 		return externalIdentity{}, fmt.Errorf("userinfo request failed: %s", uresp.Status)
 	}
-	defer func() { _ = uresp.Body.Close() }()
 	ubody, _ := io.ReadAll(io.LimitReader(uresp.Body, 1<<20))
 	var m map[string]any
 	if err := json.Unmarshal(ubody, &m); err != nil {
