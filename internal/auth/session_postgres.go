@@ -15,9 +15,29 @@ func NewPostgresSessionRepository(pool *pgxpool.Pool) *PostgresSessionRepository
 	return &PostgresSessionRepository{pool: pool}
 }
 func (r *PostgresSessionRepository) Create(ctx context.Context, s Session) (Session, error) {
-	row := r.pool.QueryRow(ctx, `INSERT INTO sessions(user_id,token_hash,ip,user_agent,expires_at) VALUES($1,$2,$3,$4,$5) RETURNING id,user_id,token_hash,ip,user_agent,expires_at,revoked_at`, s.UserID, s.TokenHash, s.IP, s.UserAgent, s.ExpiresAt)
-	err := row.Scan(&s.ID, &s.UserID, &s.TokenHash, &s.IP, &s.UserAgent, &s.ExpiresAt, &s.RevokedAt)
-	return s, err
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return s, err
+	}
+	defer tx.Rollback(ctx)
+	var active bool
+	if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE id=$1 FOR UPDATE`, s.UserID).Scan(&active); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return s, storage.ErrNotFound
+		}
+		return s, err
+	}
+	if !active {
+		return s, storage.ErrNotFound
+	}
+	row := tx.QueryRow(ctx, `INSERT INTO sessions(user_id,token_hash,ip,user_agent,expires_at) VALUES($1,$2,$3,$4,$5) RETURNING id,user_id,token_hash,ip,user_agent,expires_at,revoked_at`, s.UserID, s.TokenHash, s.IP, s.UserAgent, s.ExpiresAt)
+	if err := row.Scan(&s.ID, &s.UserID, &s.TokenHash, &s.IP, &s.UserAgent, &s.ExpiresAt, &s.RevokedAt); err != nil {
+		return s, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return s, err
+	}
+	return s, nil
 }
 func (r *PostgresSessionRepository) FindByTokenHash(ctx context.Context, hash string) (Session, error) {
 	var s Session

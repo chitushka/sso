@@ -195,6 +195,9 @@ func (s *Service) establishSession(ctx context.Context, u users.User, in LoginIn
 	}
 	exp := time.Now().Add(s.sessionTTL)
 	if _, err = s.sessions.Create(ctx, Session{UserID: u.ID, TokenHash: hash, IP: in.IP, UserAgent: in.UserAgent, ExpiresAt: exp}); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return LoginResult{}, ErrUserBlocked
+		}
 		return LoginResult{}, err
 	}
 	_ = s.users.TouchLastLogin(ctx, u.ID)

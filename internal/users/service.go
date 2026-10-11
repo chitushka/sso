@@ -13,8 +13,7 @@ type PasswordHasher interface {
 	Hash(password string) (string, error)
 }
 
-// TokenCacheInvalidator lets Delete evict a blocked user's cached access state
-// so the block is effective immediately rather than after the cache TTL.
+// TokenCacheInvalidator немедленно удаляет закэшированное состояние доступа.
 type TokenCacheInvalidator interface {
 	Invalidate(userID uuid.UUID)
 }
@@ -29,8 +28,10 @@ func NewService(repo Repository, passwords PasswordHasher, audit audit.Repositor
 	return &Service{repo: repo, passwords: passwords, audit: audit}
 }
 
-// WithTokenCache wires the access-state cache so account blocks bust it at once.
+// WithTokenCache подключает кэш состояния доступа к операциям смены статуса.
 func (s *Service) WithTokenCache(c TokenCacheInvalidator) *Service { s.tokenCache = c; return s }
+
+var ErrDeletedUserRestore = errors.New("deleted user cannot be restored through update")
 
 type CreateUserInput struct {
 	Username   string            `json:"username"`
@@ -86,9 +87,19 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (User, error) {
 	return s.repo.FindByID(ctx, id)
 }
 func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateUserInput) (User, error) {
+	current, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return User{}, err
+	}
+	if current.Status == StatusDeleted && in.Status != StatusDeleted {
+		return User{}, ErrDeletedUserRestore
+	}
 	u, err := s.repo.Update(ctx, User{ID: id, Username: in.Username, Email: in.Email, Status: in.Status, FirstName: in.FirstName, LastName: in.LastName, Attributes: in.Attributes})
 	if err != nil {
 		return User{}, err
+	}
+	if s.tokenCache != nil {
+		s.tokenCache.Invalidate(id)
 	}
 	if err := audit.Write(ctx, s.audit, audit.Event{Action: "user_updated", TargetType: "user", TargetID: id.String()}); err != nil {
 		return User{}, err
@@ -96,8 +107,7 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateUserInput) 
 	return u, nil
 }
 
-// Delete is a soft delete: the row is kept for audit/FK integrity, the status
-// blocks login and the user disappears from normal flows.
+// Delete выполняет мягкое удаление с атомарным отзывом всех полномочий.
 func (s *Service) Delete(ctx context.Context, id uuid.UUID, ip, ua string) error {
 	u, err := s.repo.FindByID(ctx, id)
 	if err != nil {
@@ -107,8 +117,6 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID, ip, ua string) error
 	if _, err := s.repo.Update(ctx, u); err != nil {
 		return err
 	}
-	// A blocked account must lose its live access tokens immediately.
-	_ = s.repo.InvalidateTokens(ctx, id)
 	if s.tokenCache != nil {
 		s.tokenCache.Invalidate(id)
 	}

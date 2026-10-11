@@ -114,7 +114,29 @@ func scanRefreshToken(row pgx.Row) (RefreshToken, error) {
 	return t, err
 }
 func (r *PostgresRepository) CreateRefreshToken(ctx context.Context, t RefreshToken) (RefreshToken, error) {
-	return scanRefreshToken(r.pool.QueryRow(ctx, `INSERT INTO refresh_tokens(token_hash,family_id,user_id,client_id,scope,expires_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING `+refreshCols, t.TokenHash, t.FamilyID, t.UserID, t.ClientID, t.Scope, t.ExpiresAt))
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return RefreshToken{}, err
+	}
+	defer tx.Rollback(ctx)
+	var active bool
+	if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE id=$1 FOR UPDATE`, t.UserID).Scan(&active); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RefreshToken{}, storage.ErrNotFound
+		}
+		return RefreshToken{}, err
+	}
+	if !active {
+		return RefreshToken{}, storage.ErrNotFound
+	}
+	out, err := scanRefreshToken(tx.QueryRow(ctx, `INSERT INTO refresh_tokens(token_hash,family_id,user_id,client_id,scope,expires_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING `+refreshCols, t.TokenHash, t.FamilyID, t.UserID, t.ClientID, t.Scope, t.ExpiresAt))
+	if err != nil {
+		return RefreshToken{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return RefreshToken{}, err
+	}
+	return out, nil
 }
 func (r *PostgresRepository) FindRefreshTokenByHash(ctx context.Context, hash string) (RefreshToken, error) {
 	return scanRefreshToken(r.pool.QueryRow(ctx, `SELECT `+refreshCols+` FROM refresh_tokens WHERE token_hash=$1`, hash))

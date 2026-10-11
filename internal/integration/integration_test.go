@@ -10,6 +10,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -24,8 +26,10 @@ import (
 	"github.com/chitushka/sso/internal/app"
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/config"
+	"github.com/chitushka/sso/internal/oauth"
 	"github.com/chitushka/sso/internal/oidc"
 	"github.com/chitushka/sso/internal/secrets"
+	"github.com/chitushka/sso/internal/storage"
 	"github.com/chitushka/sso/internal/users"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -357,7 +361,81 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
-	// 8. RBAC: a plain user has no admin permissions.
+	// 8. Блокировка атомарно отзывает все полномочия, а разблокировка не
+	// восстанавливает старые сессии и токены.
+	var revokeUser users.User
+	if resp := doJSON(t, http.MethodPost, "/api/v1/users", admin.credential(), map[string]string{
+		"username": "revoke-user", "email": "revoke-user@example.org", "password": "RevokePassword1!",
+	}, &revokeUser); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create revocation user: %d", resp.StatusCode)
+	}
+	revokeSession := loginSession(t, "revoke-user", "RevokePassword1!")
+	_, revokeCode := requestAuthorizationCode(t, revokeSession.SessionToken)
+	revokeStatus, revokeTokens := tokenReq(url.Values{"grant_type": {"authorization_code"}, "code": {revokeCode}, "redirect_uri": {"https://client.example/cb"}, "client_id": {"test-app"}, "client_secret": {created.ClientSecret}})
+	if revokeStatus != http.StatusOK {
+		t.Fatalf("initial token exchange for revocation user: %d %v", revokeStatus, revokeTokens)
+	}
+	oldAccess, _ := revokeTokens["access_token"].(string)
+	oldRefresh, _ := revokeTokens["refresh_token"].(string)
+	_, unusedCode := requestAuthorizationCode(t, revokeSession.SessionToken)
+	if unusedCode == "" {
+		t.Fatal("authorization code for revocation test was not issued")
+	}
+	updateUser := map[string]any{
+		"username": revokeUser.Username, "email": revokeUser.Email, "status": users.StatusBlocked,
+		"first_name": revokeUser.FirstName, "last_name": revokeUser.LastName, "attributes": revokeUser.Attributes,
+	}
+	if resp := doJSON(t, http.MethodPut, "/api/v1/users/"+revokeUser.ID.String(), admin.credential(), updateUser, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("block user: %d", resp.StatusCode)
+	}
+	if status, _ := requestAuthorizationCode(t, revokeSession.SessionToken); status != http.StatusUnauthorized {
+		t.Fatalf("session remained active after block: %d", status)
+	}
+	if status, body := tokenReq(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {oldRefresh}, "client_id": {"test-app"}, "client_secret": {created.ClientSecret}}); status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+		t.Fatalf("refresh token remained active after block: %d %v", status, body)
+	}
+	introspect := func(token string) map[string]any {
+		res, err := client.PostForm(server.URL+"/oauth2/introspect", url.Values{"token": {token}, "client_id": {"test-app"}, "client_secret": {created.ClientSecret}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	if body := introspect(oldAccess); body["active"] != false {
+		t.Fatalf("access token remained active after block: %v", body)
+	}
+	var cutoffSet bool
+	var liveSessions, liveRefresh, liveCodes int
+	if err := pool.QueryRow(context.Background(), `SELECT tokens_invalid_before IS NOT NULL,
+		(SELECT count(*) FROM sessions WHERE user_id=$1 AND revoked_at IS NULL),
+		(SELECT count(*) FROM refresh_tokens WHERE user_id=$1 AND revoked_at IS NULL),
+		(SELECT count(*) FROM oauth_authorization_codes WHERE user_id=$1 AND used_at IS NULL)
+		FROM users WHERE id=$1`, revokeUser.ID).Scan(&cutoffSet, &liveSessions, &liveRefresh, &liveCodes); err != nil {
+		t.Fatal(err)
+	}
+	if !cutoffSet || liveSessions != 0 || liveRefresh != 0 || liveCodes != 0 {
+		t.Fatalf("incomplete credential revocation: cutoff=%v sessions=%d refresh=%d codes=%d", cutoffSet, liveSessions, liveRefresh, liveCodes)
+	}
+	updateUser["status"] = users.StatusActive
+	if resp := doJSON(t, http.MethodPut, "/api/v1/users/"+revokeUser.ID.String(), admin.credential(), updateUser, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("unblock user: %d", resp.StatusCode)
+	}
+	if body := introspect(oldAccess); body["active"] != false {
+		t.Fatalf("old access token revived after unblock: %v", body)
+	}
+	if resp := doJSON(t, http.MethodDelete, "/api/v1/users/"+revokeUser.ID.String(), admin.credential(), nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete user: %d", resp.StatusCode)
+	}
+	if resp := doJSON(t, http.MethodPut, "/api/v1/users/"+revokeUser.ID.String(), admin.credential(), updateUser, nil); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("deleted user restoration through update must return 409, got %d", resp.StatusCode)
+	}
+
+	// 9. RBAC: a plain user has no admin permissions.
 	if resp := doJSON(t, "POST", "/api/v1/users", admin.credential(), map[string]string{"username": "bob", "email": "bob@example.org", "password": "BobPassword1!"}, nil); resp.StatusCode != 201 {
 		t.Fatalf("create user: %d", resp.StatusCode)
 	}
@@ -381,7 +459,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("admin must list users, got %d", resp.StatusCode)
 	}
 
-	// 9. Two instances racing to rotate an old signing key must commit exactly
+	// 10. Two instances racing to rotate an old signing key must commit exactly
 	// one replacement and keep exactly one active key.
 	if _, err := pool.Exec(context.Background(), `UPDATE oidc_signing_keys SET created_at=now()-interval '31 days' WHERE status='active'`); err != nil {
 		t.Fatal(err)
@@ -415,7 +493,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("concurrent rotation left active=%d published=%d", activeKeys, publishedKeys)
 	}
 
-	// 10. Offline encryption-key rotation re-encrypts every secret class and
+	// 11. Offline encryption-key rotation re-encrypts every secret class and
 	// rejects the old key afterwards.
 	mfaCiphertext, err := oldEncryptor.Encrypt("mfa-seed")
 	if err != nil {
@@ -457,8 +535,85 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
-	// 11. Migrations are idempotent on restart (MigrateOnStart with no changes).
+	// 12. Migrations are idempotent on restart (MigrateOnStart with no changes).
 	if !strings.Contains(server.URL, "http://") {
 		t.Fatal("sanity")
+	}
+}
+
+func TestConcurrentBlockWithSessionAndRefreshIssuance(t *testing.T) {
+	pool, err := pgxpool.New(context.Background(), testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	userID := uuid.New()
+	username := "concurrent-revoke-" + userID.String()
+	if _, err := pool.Exec(context.Background(), `INSERT INTO users(id,username,email,status,source) VALUES($1,$2,$3,'active','local')`, userID, username, username+"@example.org"); err != nil {
+		t.Fatal(err)
+	}
+	userRepo := users.NewPostgresRepository(pool)
+	sessionRepo := auth.NewPostgresSessionRepository(pool)
+	oauthRepo := oauth.NewPostgresRepository(pool, auth.NewArgon2idHasher())
+
+	type operationResult struct {
+		kind string
+		err  error
+	}
+	start := make(chan struct{})
+	results := make(chan operationResult, 41)
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, err := sessionRepo.Create(context.Background(), auth.Session{UserID: userID, TokenHash: fmt.Sprintf("session-%s-%d", userID, i), ExpiresAt: time.Now().Add(time.Hour)})
+			results <- operationResult{kind: "session", err: err}
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, err := oauthRepo.CreateRefreshToken(context.Background(), oauth.RefreshToken{TokenHash: fmt.Sprintf("refresh-%s-%d", userID, i), FamilyID: uuid.New(), UserID: userID, ClientID: "test-app", ExpiresAt: time.Now().Add(time.Hour)})
+			results <- operationResult{kind: "refresh", err: err}
+		}(i)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err := userRepo.Update(context.Background(), users.User{ID: userID, Username: username, Email: username + "@example.org", Status: users.StatusBlocked, Source: users.SourceLocal, Attributes: map[string]string{}})
+		results <- operationResult{kind: "block", err: err}
+	}()
+	close(start)
+	wg.Wait()
+	close(results)
+
+	for result := range results {
+		if result.kind == "block" && result.err != nil {
+			t.Fatalf("concurrent block failed: %v", result.err)
+		}
+		if result.kind != "block" && result.err != nil && !errors.Is(result.err, storage.ErrNotFound) {
+			t.Fatalf("concurrent %s issuance returned unexpected error: %v", result.kind, result.err)
+		}
+	}
+	var status users.Status
+	var cutoffSet bool
+	var liveSessions, liveRefresh int
+	if err := pool.QueryRow(context.Background(), `SELECT status,tokens_invalid_before IS NOT NULL,
+		(SELECT count(*) FROM sessions WHERE user_id=$1 AND revoked_at IS NULL),
+		(SELECT count(*) FROM refresh_tokens WHERE user_id=$1 AND revoked_at IS NULL)
+		FROM users WHERE id=$1`, userID).Scan(&status, &cutoffSet, &liveSessions, &liveRefresh); err != nil {
+		t.Fatal(err)
+	}
+	if status != users.StatusBlocked || !cutoffSet || liveSessions != 0 || liveRefresh != 0 {
+		t.Fatalf("credentials survived concurrent block: status=%s cutoff=%v sessions=%d refresh=%d", status, cutoffSet, liveSessions, liveRefresh)
+	}
+	if _, err := sessionRepo.Create(context.Background(), auth.Session{UserID: userID, TokenHash: "session-after-block-" + userID.String(), ExpiresAt: time.Now().Add(time.Hour)}); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("session issuance after block must fail closed: %v", err)
+	}
+	if _, err := oauthRepo.CreateRefreshToken(context.Background(), oauth.RefreshToken{TokenHash: "refresh-after-block-" + userID.String(), FamilyID: uuid.New(), UserID: userID, ClientID: "test-app", ExpiresAt: time.Now().Add(time.Hour)}); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("refresh issuance after block must fail closed: %v", err)
 	}
 }

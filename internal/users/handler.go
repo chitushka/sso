@@ -83,6 +83,10 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			u, err := svc.Update(r.Context(), id, req)
 			if err != nil {
+				if errors.Is(err, ErrDeletedUserRestore) {
+					httpx.Error(w, http.StatusConflict, "deleted user cannot be restored through update")
+					return
+				}
 				httpx.Error(w, 500, "failed to update user")
 				return
 			}

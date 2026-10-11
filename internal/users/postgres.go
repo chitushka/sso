@@ -82,7 +82,46 @@ func (r *PostgresRepository) Update(ctx context.Context, u User) (User, error) {
 	if u.Attributes == nil {
 		u.Attributes = map[string]string{}
 	}
-	return scanUser(r.pool.QueryRow(ctx, `UPDATE users SET username=$2,email=$3,status=$4,first_name=$5,last_name=$6,attributes=$7,updated_at=now() WHERE id=$1 RETURNING `+userCols, u.ID, u.Username, u.Email, u.Status, u.FirstName, u.LastName, u.Attributes))
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var current Status
+	if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id=$1 FOR UPDATE`, u.ID).Scan(&current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return User{}, storage.ErrNotFound
+		}
+		return User{}, err
+	}
+	if current == StatusDeleted && u.Status != StatusDeleted {
+		return User{}, ErrDeletedUserRestore
+	}
+
+	out, err := scanUser(tx.QueryRow(ctx, `UPDATE users
+SET username=$2,email=$3,status=$4,first_name=$5,last_name=$6,attributes=$7,
+    tokens_invalid_before=CASE WHEN $4 <> 'active' THEN now() ELSE tokens_invalid_before END,
+    updated_at=now()
+WHERE id=$1 RETURNING `+userCols, u.ID, u.Username, u.Email, u.Status, u.FirstName, u.LastName, u.Attributes))
+	if err != nil {
+		return User{}, err
+	}
+	if u.Status != StatusActive {
+		if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, u.ID); err != nil {
+			return User{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, u.ID); err != nil {
+			return User{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE oauth_authorization_codes SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`, u.ID); err != nil {
+			return User{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, err
+	}
+	return out, nil
 }
 func (r *PostgresRepository) SetEmailVerified(ctx context.Context, id uuid.UUID, verified bool) error {
 	_, err := r.pool.Exec(ctx, `UPDATE users SET email_verified=$2,updated_at=now() WHERE id=$1`, id, verified)

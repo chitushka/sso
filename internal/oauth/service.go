@@ -349,15 +349,20 @@ func (s *Service) issue(ctx context.Context, u users.User, c Client, scope, nonc
 	if err != nil {
 		return TokenResult{}, err
 	}
-	if _, err := s.repo.CreateRefreshToken(ctx, RefreshToken{TokenHash: refreshHash, FamilyID: family, UserID: u.ID, ClientID: c.ClientID, Scope: scope, ExpiresAt: time.Now().Add(s.refreshTTL)}); err != nil {
-		return TokenResult{}, err
-	}
 	var idt string
 	if strings.Contains(" "+scope+" ", " openid ") && s.idTokens != nil {
 		idt, err = s.idTokens.IssueIDToken(ctx, u, c.ClientID, nonce, authTime)
 		if err != nil {
 			return TokenResult{}, err
 		}
+	}
+	// Запись refresh-токена — последний атомарный шлюз перед возвратом ответа:
+	// блокировка пользователя не может пересечься с выдачей готового набора токенов.
+	if _, err := s.repo.CreateRefreshToken(ctx, RefreshToken{TokenHash: refreshHash, FamilyID: family, UserID: u.ID, ClientID: c.ClientID, Scope: scope, ExpiresAt: time.Now().Add(s.refreshTTL)}); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return TokenResult{}, ErrInvalidGrant
+		}
+		return TokenResult{}, err
 	}
 	return TokenResult{AccessToken: access, RefreshToken: rawRefresh, IDToken: idt, TokenType: "Bearer", ExpiresIn: int64(time.Until(exp).Seconds()), Scope: scope}, nil
 }
