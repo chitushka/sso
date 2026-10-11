@@ -1,320 +1,320 @@
-# SSO v1.0 — Production Readiness
+# SSO — единый вход и поставщик удостоверений
 
-Single-tenant by design: this SSO serves exactly one company. Multi-tenancy (realms) is intentionally out of scope.
+Готовый к эксплуатации SSO/IdP на Go для одной организации. Система предоставляет локальную и LDAP-аутентификацию, OAuth 2.0, OpenID Connect, RBAC, MFA, федеративный вход и административную панель.
 
-## Deployment
+Мультитенантность и realms намеренно не поддерживаются: пользователи, клиенты, роли и ключи находятся в едином глобальном пространстве.
 
-The binary serves plain HTTP and must run behind a TLS-terminating reverse proxy (nginx, traefik, Caddy) in production:
+## Возможности
 
-- Terminate HTTPS at the proxy and forward to `:8080`. Configure `SSO_TRUSTED_PROXIES` and overwrite `X-Forwarded-Proto: https`; session cookies are then always emitted with `Secure`.
-- Set `SSO_TRUSTED_PROXIES` to the proxy's IP/CIDR. Only then is `X-Forwarded-For` honored for the client IP; from any other peer the header is ignored so a client cannot spoof its IP to evade per-IP brute-force lockout and rate limiting. Empty (default) = trust nobody, use the direct peer address.
-- Provide real `SSO_JWT_SECRET` and `SSO_ENCRYPTION_KEY` (each ≥32 chars, e.g. `openssl rand -base64 48`) via a `.env` file or the orchestrator's secret store — never the committed defaults.
-- `docker compose up` applies migrations automatically (`SSO_MIGRATE_ON_START=true`). For staged prod deploys keep it `false` and run migrations as a separate step.
-- `docker-compose.yml` is local-development-only. It publishes PostgreSQL and LDAP and uses disposable credentials.
-- `docker-compose.prod.yml` runs only the hardened application container: read-only root filesystem, all Linux capabilities dropped, no host ports, and a pre-created private ingress network.
-- Production uses externally managed PostgreSQL with `sslmode=require`, `verify-ca`, or preferably `verify-full`. Configure external LDAP providers with LDAPS or StartTLS.
+- локальная аутентификация, серверные сессии, подтверждение email и восстановление пароля;
+- LDAP/Active Directory Search + Bind и сопоставление групп;
+- OAuth 2.0 Authorization Code, Refresh Token и Client Credentials;
+- OIDC Discovery, JWKS, ID Token, UserInfo, consent и RP/back-channel logout;
+- обязательный PKCE S256 для публичных клиентов;
+- роли, разрешения, группы и аудит;
+- TOTP MFA и коды восстановления;
+- вход через Google, GitHub и произвольных OIDC-провайдеров;
+- административная SPA на Vue 3 и Bootstrap 5;
+- health checks, метрики Prometheus, встроенные миграции и интеграционные тесты.
 
-Operational endpoints: `GET /health/live`, `GET /health/ready` (checks database connectivity and the embedded migration version), `GET /health/version`, and authenticated `GET /metrics` (requires the `metrics:read` permission).
+## Стек
 
-Production-oriented SSO/IdP prototype written in Go.
+- Go 1.25.0, образ сборщика `golang:1.25-alpine`;
+- PostgreSQL;
+- Vue 3, JavaScript, Vite, Bootstrap 5, Pinia, Vue Router и Axios;
+- Docker и Docker Compose.
 
-## Stack
+## Архитектура
 
-- Go 1.25.0
-- Docker build image: `golang:1.25-alpine`
-- PostgreSQL
-- Redis-ready architecture
-- Bootstrap admin
-- Local authentication
-- LDAP / Active Directory Search + Bind
-- OAuth2 Authorization Code Flow
-- OpenID Connect Discovery, JWKS, ID Token and UserInfo
-- RBAC for administrative APIs
+Зависимости направлены от транспорта к приложению и доменным портам, затем — к инфраструктурным адаптерам:
 
-## Start
+```text
+HTTP-обработчики/middleware -> сервисы приложения -> интерфейсы репозиториев
+                                                  <- PostgreSQL/внешние сервисы
+```
+
+Корень композиции расположен в `internal/app`. Доменные и прикладные пакеты не зависят от HTTP-обработчиков или конкретных PostgreSQL-репозиториев. Протокольная логика находится в `oauth`, `oidc`, `ldap` и `broker`.
+
+Основные модули:
+
+- `auth` — локальный вход, сессии и токены;
+- `bootstrap` — создание первого администратора;
+- `users` — пользователи и профили;
+- `ldap` — LDAP и Search + Bind;
+- `oauth` — клиенты, коды авторизации и token endpoint;
+- `oidc` — Discovery, JWKS, ID Token и UserInfo;
+- `rbac` — роли, разрешения, группы и доступ;
+- `audit` — аудит;
+- `broker` — внешние поставщики удостоверений;
+- `config` — типизированная конфигурация из переменных `SSO_`.
+
+Модель доступа:
+
+```text
+Пользователь -> Роль -> Разрешение
+Пользователь -> Группа -> Роль -> Разрешение
+```
+
+Разрешения — пары ресурс/действие, например `users:create`, `ldap:test`, `oauth_clients:update`. Доступ после аутентификации проверяет HTTP middleware; сервисы приложения остаются независимыми от HTTP.
+
+Токены подписываются ключами RSA 2048/RS256. Открытые активные и выводимые из обращения ключи публикуются через JWKS, закрытые ключи хранятся в PostgreSQL зашифрованными.
+
+## Быстрый запуск
 
 ```bash
 docker compose build
 docker compose up
 ```
 
-Production:
+`docker-compose.yml` предназначен только для разработки: он публикует PostgreSQL и LDAP и использует временные учётные данные.
+
+Служебные маршруты:
+
+- `GET /health/live` — процесс работает;
+- `GET /health/ready` — база доступна и миграции актуальны;
+- `GET /health/version` — версия;
+- `GET /metrics` — метрики, требуется `metrics:read`.
+
+## Развёртывание в production
+
+Приложение принимает HTTP и должно работать за reverse proxy с завершением TLS.
 
 ```bash
 cp .env.production.example .env.production
-# Fill every required value and replace SSO_IMAGE with an immutable digest.
+# Заполните значения и замените SSO_IMAGE на неизменяемый digest.
 docker network create production-edge
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d
 ```
 
-Run migrations manually with your preferred migration tool. Migration files are in `migrations/`.
+`docker-compose.prod.yml` запускает hardened-контейнер: корневая файловая система доступна только для чтения, capabilities удалены, порты хоста не публикуются.
 
-## Configuration
+Требования:
 
-Release 0.5.1 standardizes all application environment variables under the `SSO_` namespace.
+- завершайте HTTPS на доверенном proxy и передавайте запросы на `:8080`;
+- укажите IP/CIDR proxy в `SSO_TRUSTED_PROXIES` и устанавливайте `X-Forwarded-Proto: https`;
+- используйте PostgreSQL с `sslmode=require`, `verify-ca` или предпочтительно `verify-full`;
+- подключайте LDAP через LDAPS или StartTLS;
+- храните секреты в хранилище оркестратора или защищённом env-файле;
+- используйте разные `SSO_JWT_SECRET` и `SSO_ENCRYPTION_KEY` длиной не менее 32 символов;
+- настройте SMTP с STARTTLS и HTTPS issuer.
 
-| Variable | Required | Example | Description |
-| --- | --- | --- | --- |
-| `SSO_ENV` | No | `local` | Runtime environment name. |
-| `SSO_HTTP_ADDR` | No | `:8080` | HTTP listen address. |
-| `SSO_DATABASE_URL` | Yes | `postgres://sso@db.example.org:5432/sso?sslmode=verify-full` | PostgreSQL connection string. Production requires explicit TLS. |
-| `SSO_MIGRATE_ON_START` | No | `false` | Apply embedded DB migrations on startup. |
-| `SSO_TRUSTED_PROXIES` | No | — | Comma-separated CIDRs/IPs of reverse proxies allowed to set `X-Forwarded-For`. Empty = trust none. |
-| `SSO_JWT_SECRET` | Yes | `change-me-please-change-me-please-change-me` | HMAC secret for short-lived broker state. Access, MFA and OIDC tokens use rotating RSA keys stored encrypted in PostgreSQL. Must be at least 32 characters. |
-| `SSO_ENCRYPTION_KEY` | Yes | `change-me-please-change-me-please-change-me` | Key for encrypting LDAP, MFA, broker and OIDC private-key material with AES-256-GCM. Must be at least 32 characters. Do not replace it directly; use the rotation procedure below. |
-| `SSO_ACCESS_TOKEN_TTL` | No | `15m` | Access token lifetime. |
-| `SSO_SESSION_TTL` | No | `720h` | Session lifetime. |
-| `SSO_REFRESH_TOKEN_TTL` | No | `720h` | OAuth2 refresh token lifetime. |
-| `SSO_CORS_ALLOWED_ORIGINS` | No | `http://localhost:3000,http://localhost:5173,http://localhost:8080` | Comma-separated CORS allowed origins. |
-| `SSO_ISSUER` | No | `http://localhost:8080` | OAuth2/OIDC issuer URL. |
-| `SSO_LOG_LEVEL` | No | `info` | JSON logger level: `debug`, `info`, `warn`, `error`. |
-| `SSO_SMTP_HOST` | Production | `smtp.example.org` | SMTP server. Production startup fails when SMTP is not configured; message bodies and recovery links are never logged. |
-| `SSO_SMTP_PORT` | No | `587` | SMTP port. |
-| `SSO_SMTP_USERNAME` / `SSO_SMTP_PASSWORD` | No | — | SMTP credentials (plain auth). |
-| `SSO_SMTP_FROM` | No | `sso@example.org` | Sender address; required to enable SMTP. |
-| `SSO_SMTP_STARTTLS` | No | `true` | Upgrade SMTP with STARTTLS; must be `true` in production even when authentication is disabled. |
+`X-Forwarded-For` учитывается только от узлов из `SSO_TRUSTED_PROXIES`. Встроенные миграции применяются при `SSO_MIGRATE_ON_START=true`; для поэтапного развёртывания применяйте файлы из `migrations/` отдельным заданием.
 
-Deprecated variable names such as `DATABASE_URL`, `SSO_DB_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, and `SESSION_TTL` are intentionally not supported by v0.5.1.
+## Конфигурация
 
-## Bootstrap
+Поддерживается только пространство имён `SSO_`. Устаревшие `DATABASE_URL`, `SSO_DB_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL` и `SESSION_TTL` не принимаются.
+
+| Переменная | Обязательность | Назначение |
+| --- | --- | --- |
+| `SSO_ENV` | нет | Среда выполнения |
+| `SSO_HTTP_ADDR` | нет | Адрес HTTP-сервера, обычно `:8080` |
+| `SSO_DATABASE_URL` | да | Подключение PostgreSQL; в production нужен TLS |
+| `SSO_MIGRATE_ON_START` | нет | Применять миграции при запуске |
+| `SSO_TRUSTED_PROXIES` | нет | IP/CIDR доверенных proxy через запятую |
+| `SSO_JWT_SECRET` | да | HMAC-секрет состояния broker, не менее 32 символов |
+| `SSO_ENCRYPTION_KEY` | да | Ключ AES-256-GCM, не менее 32 символов |
+| `SSO_ACCESS_TOKEN_TTL` | нет | Срок access-токена, обычно `15m` |
+| `SSO_SESSION_TTL` | нет | Срок сессии, обычно `720h` |
+| `SSO_REFRESH_TOKEN_TTL` | нет | Срок refresh-токена |
+| `SSO_CORS_ALLOWED_ORIGINS` | нет | Разрешённые origins через запятую |
+| `SSO_ISSUER` | нет | Issuer OAuth 2.0/OIDC |
+| `SSO_LOG_LEVEL` | нет | `debug`, `info`, `warn` или `error` |
+| `SSO_SMTP_HOST`, `SSO_SMTP_PORT` | production | SMTP-сервер и порт |
+| `SSO_SMTP_USERNAME`, `SSO_SMTP_PASSWORD` | нет | Учётные данные SMTP |
+| `SSO_SMTP_FROM` | для SMTP | Адрес отправителя |
+| `SSO_SMTP_STARTTLS` | production | Должен быть `true` |
+
+Production-проверка отклоняет незашифрованный PostgreSQL, SMTP без STARTTLS, незащищённый LDAP, HTTP issuer, одинаковые или шаблонные секреты и отсутствующий SMTP.
+
+### Ротация `SSO_ENCRYPTION_KEY`
+
+1. Сделайте резервную копию PostgreSQL, остановите API и примените миграции.
+2. Оставьте текущий ключ в `SSO_ENCRYPTION_KEY`, новый передайте через `SSO_NEW_ENCRYPTION_KEY`.
+3. Выполните `/app/sso-api rotate-encryption-key`.
+4. После успеха замените основной ключ, удалите новую переменную и запустите API.
+
+Операция атомарно перешифровывает секреты. При ошибке транзакция откатывается. Нельзя одновременно запускать экземпляры со старым и новым ключами.
+
+## Первый администратор и вход
 
 ```http
-GET /api/v1/bootstrap/status
+GET  /api/v1/bootstrap/status
 POST /api/v1/bootstrap
-```
-
-Payload:
-
-```json
-{
-  "username": "admin",
-  "email": "admin@example.com",
-  "password": "StrongPassword123"
-}
-```
-
-## Auth
-
-```http
 POST /api/v1/auth/login
 POST /api/v1/auth/logout
 GET  /api/v1/auth/me
 ```
 
-## OAuth2 / OIDC
+```json
+{
+  username: admin,
+  email: admin@example.com,
+  password: StrongPassword123
+}
+```
 
-Discovery:
+Первому пользователю назначается роль `admin`. Пароль содержит 12–128 символов. Панель использует HttpOnly cookie и CSRF-защиту; Bearer-токены не хранятся в browser storage.
+
+## OAuth 2.0 и OpenID Connect
 
 ```http
-GET /.well-known/openid-configuration
-GET /.well-known/jwks.json
-GET /oauth2/userinfo
+GET      /.well-known/openid-configuration
+GET      /.well-known/jwks.json
+GET      /oauth2/userinfo
+GET      /oauth2/authorize
+POST     /oauth2/token
+POST     /oauth2/revoke
+POST     /oauth2/introspect
+GET/POST /oauth2/logout
+GET/POST /oauth2/consent
 ```
 
-Authorization Code Flow:
+Ошибки `/oauth2/*` соответствуют RFC 6749: `{error:...,error_description:...}`.
 
-```http
-GET /oauth2/authorize?response_type=code&client_id=app&redirect_uri=http://localhost/callback&scope=openid profile email&state=xyz&nonce=abc&code_challenge=...&code_challenge_method=S256
-POST /oauth2/token
+Refresh-токены одноразовые и ротируются. Повторное использование старого токена отзывает всю семью. Конфиденциальные клиенты используют `client_secret_basic` или `client_secret_post`; публичные — PKCE S256.
+
+Access-токены RS256 содержат `kid`, `iss`, `aud`, `exp`, `iat` и `token_type`. Блокировка или удаление пользователя, смена или сброс пароля и выход на всех устройствах отзывают пользовательские полномочия. Токены `client_credentials` не принимаются административным API.
+
+## Учётные записи и безопасность
+
+- Одноразовые ссылки и refresh-токены хранятся только в виде хешей.
+- TOTP соответствует RFC 6238; секрет зашифрован, коды восстановления хешируются.
+- Принятый TOTP-код нельзя использовать повторно.
+- Внешняя учётная запись связывается только по подтверждённому email и не связывается автоматически с локальной записью с MFA.
+- Пустые пароли отклоняются до LDAP bind.
+- Ошибки входа учитываются в PostgreSQL по паре «пользователь, IP» с экспоненциальной блокировкой.
+- Чувствительные маршруты защищены локальным token bucket. Для нескольких экземпляров общий лимит обеспечивает ingress; распределённый limiter указан в `PLAN.md`.
+- Тела запросов ограничены 1 МиБ, секреты и токены не журналируются.
+- Аудит: `GET /api/v1/audit?actor=&action=&from=&to=&limit=&offset=`, разрешение `audit:read`.
+
+## Административная панель
+
+SPA находится в `web/admin/`. В production она собирается в Docker и обслуживается Go-бинарником из `web/admin/dist`. Без `dist` сервер работает только как API.
+
+```bash
+cd web/admin
+npm ci
+npm run dev
 ```
 
-Refresh, revocation and introspection (v0.6):
+Vite работает на `:5173` и проксирует API на `:8080`.
 
-```http
-POST /oauth2/token       (grant_type=refresh_token&refresh_token=...)
-POST /oauth2/revoke      (token=...)
-POST /oauth2/introspect  (token=...)
+## Как подключить приложение к SSO
+
+В примерах приложение `hello_sso` работает на `https://hello-sso.example.com`, а SSO — на `https://sso.example.com`. Подставьте реальные адреса.
+
+### 1. Зарегистрируйте OAuth-клиента
+
+В панели откройте **Clients**, нажмите **New client** и заполните:
+
+| Поле | Пример | Пояснение |
+| --- | --- | --- |
+| `client_id` | `hello_sso` | Уникальный идентификатор |
+| Name | `Hello SSO Demo App` | Отображаемое имя |
+| Type | `confidential` | `confidential` для backend, `public` для SPA или мобильного приложения |
+| Allowed scopes | `openid profile email` | Разрешённые области доступа |
+| Redirect URIs | `https://hello-sso.example.com/auth/callback` | Точный адрес возврата |
+| Post-logout redirect URIs | `https://hello-sso.example.com/` | Адрес после выхода |
+| Back-channel logout URI | пусто | Необязательный серверный callback |
+| Skip consent | выключено | Только для доверенных приложений |
+| Enabled | включено | Клиент активен |
+
+`client_secret` показывается один раз. Храните его в менеджере секретов или серверном env-файле, не помещайте во frontend или Git. При утрате выполните **Rotate secret**.
+
+`openid` включает OIDC и ID Token, `profile` разрешает имя и источник учётной записи, `email` — почту. Запрос неразрешённого scope вернёт `invalid_scope`.
+
+### 2. Настройте библиотеку OIDC
+
+Используйте Discovery document `https://sso.example.com/.well-known/openid-configuration`.
+
+- issuer: `https://sso.example.com`;
+- authorization: `https://sso.example.com/oauth2/authorize`;
+- token: `https://sso.example.com/oauth2/token`;
+- UserInfo: `https://sso.example.com/oauth2/userinfo`;
+- JWKS: `https://sso.example.com/.well-known/jwks.json`.
+
+### 3. Выполните Authorization Code Flow
+
+```text
+https://sso.example.com/oauth2/authorize
+  ?response_type=code
+  &client_id=hello_sso
+  &redirect_uri=https://hello-sso.example.com/auth/callback
+  &scope=openid profile email
+  &state=СЛУЧАЙНАЯ_СТРОКА
 ```
 
-The token endpoint returns a `refresh_token` alongside the access token. Refresh tokens are single-use and rotated on every refresh; reusing an already-rotated token revokes the entire token family. Client credentials are accepted as `client_secret_post` or `client_secret_basic`.
+Сохраните криптографически случайный `state` в сессии и сравните после возврата — это защита от CSRF. Пароль и MFA пользователь вводит только на SSO. После согласия браузер вернётся на:
 
-Logout, consent and service accounts (v0.6.5):
-
-```http
-GET/POST /oauth2/logout  (id_token_hint=...&post_logout_redirect_uri=...&state=...)
-GET  /oauth2/consent?client_id=...&scope=...
-POST /oauth2/consent     ({"client_id": "...", "scope": "..."})
-POST /oauth2/token       (grant_type=client_credentials&scope=...)
+```text
+https://hello-sso.example.com/auth/callback?code=ОДНОРАЗОВЫЙ_КОД&state=ТА_ЖЕ_СТРОКА
 ```
 
-All `/oauth2/*` errors follow RFC 6749: `{"error": "...", "error_description": "..."}`.
+Проверьте `state` и обменяйте код с сервера приложения:
 
-## Release 0.5 - RBAC
-
-Release 0.5 adds role-based access control.
-
-### New concepts
-
-- Role: named collection of permissions.
-- Permission: resource/action pair such as `users:create`.
-- User role assignment: users receive permissions through roles.
-
-### Default roles
-
-Migration `000005_rbac` creates:
-
-- `admin` - full access to all current permissions.
-- `user` - regular user role.
-
-For compatibility with previous releases, if the database already contains users and no role assignments exist, the migration grants `admin` to the earliest created user.
-
-### New API
-
-Protected by Bearer token and RBAC middleware:
-
-```http
-GET    /api/v1/roles
-POST   /api/v1/roles
-GET    /api/v1/permissions
-GET    /api/v1/roles/{roleID}/permissions
-POST   /api/v1/roles/{roleID}/permissions
-DELETE /api/v1/roles/{roleID}/permissions/{permissionID}
-GET    /api/v1/users/{userID}/roles
-POST   /api/v1/users/{userID}/roles
-DELETE /api/v1/users/{userID}/roles/{roleID}
+```bash
+curl -X POST https://sso.example.com/oauth2/token \
+  -d grant_type=authorization_code \
+  -d code=ОДНОРАЗОВЫЙ_КОД \
+  -d redirect_uri=https://hello-sso.example.com/auth/callback \
+  -d client_id=hello_sso \
+  -d client_secret=ВАШ_CLIENT_SECRET
 ```
 
-### Bootstrap behavior
+Ответ содержит `access_token`, `id_token`, `refresh_token`, `token_type` и `expires_in`. Проверяйте ID Token через Discovery/JWKS. Используйте claim `sub` как идентификатор пользователя.
 
-`POST /api/v1/bootstrap` now assigns the `admin` role to the first created administrator when RBAC migrations have been applied.
+Профиль можно запросить через `GET /oauth2/userinfo` с заголовком `Authorization: Bearer ВАШ_ACCESS_TOKEN`.
 
-### Protected resources
+### 4. Обновляйте токены и выполняйте выход
 
-The following admin APIs now require permissions:
+Для обновления отправьте `POST /oauth2/token` с `grant_type=refresh_token`, последним `refresh_token` и учётными данными клиента. Атомарно сохраняйте новый refresh-токен: старый после обмена недействителен.
 
-- `users:*`
-- `roles:*`
-- `permissions:*`
-- `ldap:*`
-- `oauth_clients:*`
+Для выхода перенаправьте браузер:
 
-Run migrations before testing v0.5.1.
-
-## Release 0.5.2 - Security Fixes
-
-- The token endpoint now verifies the confidential client secret (Argon2id). Both `client_secret_post` and `client_secret_basic` are supported; invalid credentials return `401 invalid_client`.
-- Requested scopes are validated against the client's `allowed_scopes`; unknown scopes are rejected with `invalid_scope`.
-- LDAP bind passwords, MFA seeds, broker client secrets and OIDC signing private keys are encrypted at rest with AES-256-GCM using `SSO_ENCRYPTION_KEY`. Unversioned plaintext values are rejected, and startup verifies an encrypted database key sentinel.
-
-### Rotating `SSO_ENCRYPTION_KEY`
-
-Rotation is an offline, transactional maintenance operation. Back up PostgreSQL first, stop every API replica, and ensure all migrations are applied. Keep the current key in `SSO_ENCRYPTION_KEY`, provide a new independent key through `SSO_NEW_ENCRYPTION_KEY`, then run:
-
-```sh
-/app/sso-api rotate-encryption-key
+```text
+https://sso.example.com/oauth2/logout
+  ?id_token_hint=ПОСЛЕДНИЙ_ID_TOKEN
+  &post_logout_redirect_uri=https://hello-sso.example.com/
 ```
 
-The command verifies the current key, locks all affected tables, and atomically re-encrypts LDAP passwords, MFA seeds, broker secrets, OIDC private keys and the key verifier. If any value cannot be decrypted or updated, the transaction rolls back. After success, replace `SSO_ENCRYPTION_KEY` with the new value, unset `SSO_NEW_ENCRYPTION_KEY`, and only then restart all replicas. Never run old- and new-key API instances concurrently.
-- OIDC signing keys rotate automatically; the previous key remains in JWKS during the verification grace period.
-- Invalid duration/boolean configuration values now fail startup with a clear error instead of panicking.
+`post_logout_redirect_uri` должен посимвольно совпадать с зарегистрированным адресом.
 
-## Release 0.6 - Security Hardening
+### Публичные приложения и PKCE
 
-Run migration `000006_security_hardening` before starting v0.6.
+Для SPA и мобильных приложений создайте клиента типа `public`; секрет ему не нужен.
 
-- **Refresh tokens with rotation**: `grant_type=refresh_token` at `POST /oauth2/token`. Tokens are stored hashed, rotated on each use; reuse of a rotated token revokes the whole family (`refresh_token_reuse_detected` audit event). Lifetime is controlled by `SSO_REFRESH_TOKEN_TTL`.
-- **Token revocation** (`POST /oauth2/revoke`, RFC 7009) and **introspection** (`POST /oauth2/introspect`, RFC 7662), both requiring client authentication and advertised in the discovery document.
-- **Brute-force protection**: failed logins are counted per (username, IP); after 5 failures the pair is locked with exponential backoff (1m → 15m cap), `429` is returned and a `login_locked` audit event is written. Counters decay after 1 hour and reset on successful login.
-- **Rate limiting**: in-memory token bucket (30 req/min, burst 10 per IP) on `/api/v1/auth/login`, `/oauth2/token` and `/api/v1/bootstrap`.
-- **Audit log API**: `GET /api/v1/audit?actor=&action=&from=&to=&limit=&offset=` (RFC3339 timestamps), protected by the new `audit:read` permission.
-- **Completed admin CRUD** (all RBAC-protected, with audit events):
-  - `DELETE /api/v1/users/{id}` — soft delete (`users:delete`)
-  - `PUT/DELETE /api/v1/roles/{roleID}` (`roles:update` / `roles:delete`); built-in `admin`/`user` roles cannot be deleted
-  - `PUT/DELETE /api/v1/oauth/clients/{id}` (`oauth_clients:update` / `oauth_clients:delete`)
-  - `PUT/DELETE /api/v1/ldap/providers/{id}` (`ldap:update` / `ldap:delete`); an empty `bind_password` on update keeps the stored secret
+1. Сгенерируйте `code_verifier` длиной 43–128 символов.
+2. Вычислите `code_challenge = BASE64URL(SHA256(code_verifier))`.
+3. Передайте `code_challenge` и `code_challenge_method=S256` при авторизации.
+4. При обмене кода передайте `code_verifier` вместо `client_secret`.
 
-## Release 0.6.5 - OIDC Completeness
+Готовые OIDC-библиотеки обычно выполняют PKCE автоматически.
 
-Run migration `000007_oidc_completeness` before starting v0.6.5.
+### Частые ошибки
 
-- **RP-initiated logout**: `GET/POST /oauth2/logout` (advertised as `end_session_endpoint`). Accepts `id_token_hint` (validated against JWKS), `post_logout_redirect_uri` (must be registered in the client's `post_logout_redirect_uris`) and `state`. Revokes the SSO session and all refresh tokens of the user.
-- **Back-channel logout**: if the client has `backchannel_logout_uri`, a signed `logout_token` (RS256) is POSTed to it on logout.
-- **Consent**: `/oauth2/authorize` returns `403 consent_required` until the user grants the requested scopes. `GET /oauth2/consent` shows what is requested, `POST /oauth2/consent` grants it (scopes are merged with previous grants). Trusted first-party clients can set `skip_consent: true`.
-- **client_credentials grant**: service-to-service tokens for confidential clients; `sub` is the client's internal id, no refresh or ID token, scope validated against `allowed_scopes`.
-- **UserInfo scope filtering**: `profile` → `preferred_username`, `source`; `email` → `email`. Tokens without a scope claim receive only `sub`.
-- New client fields: `post_logout_redirect_uris`, `backchannel_logout_uri`, `skip_consent` (create and update APIs). `GET /api/v1/oauth/clients/{id}` added.
+| Ошибка | Причина | Исправление |
+| --- | --- | --- |
+| `invalid_client` | Неверные данные или клиент выключен | Проверьте ID, секрет и Enabled |
+| `invalid_grant` | Код/токен истёк, использован или не совпал URI | Повторите вход и сравните URI |
+| `invalid_scope` | Scope не разрешён | Измените Allowed scopes или запрос |
+| `login_required` | Нет активной сессии | Откройте вход в браузере |
+| `consent_required` | Нет согласия | Покажите consent или настройте Skip consent |
+| `redirect_uri mismatch` | URI отличается | Сверьте адреса посимвольно |
 
-## Release 0.7 - Admin UI
+## Проверки качества
 
-Vue 3 + Vite + Bootstrap 5 + Pinia + Vue Router + Axios (JavaScript) SPA in `web/admin/`.
+```bash
+gofmt -w <изменённые-файлы.go>
+go test ./...
+go vet ./...
+govulncheck ./...
+git diff --check
+```
 
-Pages: sign-in, dashboard, users (CRUD + role assignment), roles (CRUD + permission assignment), OAuth clients (CRUD, one-time secret display), LDAP providers (CRUD + connection test), audit log (filters), and the OAuth consent screen (`/consent?client_id=...&scope=...&continue=<authorize URL>`).
+Для фронтенда: `cd web/admin`, затем `npm ci`, `npm audit --omit=dev` и `npm run build`.
 
-- **Production**: `docker compose build` compiles the UI in a Node stage and the Go binary serves it from `web/admin/dist` on the same port (8080). Any unknown GET path falls back to `index.html` (SPA routing). If `web/admin/dist` is absent, the server runs API-only.
-- **Development**: run the API locally, then `cd web/admin && npm ci && npm run dev` — Vite serves the UI on :5173 and proxies `/api`, `/oauth2`, `/.well-known` and `/health` to :8080 (cookies flow same-origin, no CORS needed).
-- Auth: the UI uses an opaque HttpOnly session cookie plus CSRF protection; administrative Bearer tokens are not stored in browser storage. On 401 it redirects to `/login?continue=...`.
+Интеграционные тесты находятся в `internal/integration`, используют build tag `integration` и требуют PostgreSQL.
 
-## Release 0.8 - Accounts & MFA
+## План разработки
 
-Run migration `000008_accounts_mfa` before starting v0.8.
-
-**Password reset & email verification**
-- `POST /api/v1/auth/password/forgot` (`{login}`) — always returns 200 (no user enumeration) and mails a one-hour reset link. Production requires SMTP; recovery links are never logged.
-- `POST /api/v1/auth/password/reset` (`{token, password}`) — sets the password, revokes all sessions and refresh tokens of the user.
-- `POST /api/v1/auth/email/request` (Bearer) / `POST /api/v1/auth/email/verify` (`{token}`) — 24-hour links; verifying activates `pending` accounts.
-- One-time tokens are stored hashed in `one_time_tokens`.
-
-**TOTP MFA (RFC 6238, no external deps)**
-- `POST /api/v1/auth/mfa/enroll` (Bearer) → secret + `otpauth://` URL (QR is rendered in the UI); the secret is stored AES-256-GCM-encrypted.
-- `POST /api/v1/auth/mfa/activate` (`{code}`) → enables MFA and returns 8 single-use recovery codes (stored hashed, shown once).
-- Login becomes two-step: `POST /api/v1/auth/login` returns `{mfa_required, mfa_token}` (5-minute token that cannot be used as a Bearer token), then `POST /api/v1/auth/mfa/verify` (`{mfa_token, code}`) completes the session. Recovery codes are accepted in place of TOTP codes; wrong codes count toward the brute-force lockout.
-- `POST /api/v1/auth/mfa/disable` (`{code}`).
-
-**Groups**
-- `GET/POST /api/v1/groups`, `PUT/DELETE /api/v1/groups/{id}`, `GET/POST/DELETE /api/v1/groups/{id}/roles[/{roleID}]`, `GET/POST/DELETE /api/v1/users/{id}/groups[/{groupID}]` — permissions `groups:*`.
-- Permission checks now include roles inherited through groups.
-- LDAP: the provider's `group_attribute` (default `memberOf`) is read at login and mapped onto SSO groups via `GET/POST/DELETE /api/v1/ldap/providers/{id}/group-mappings`; ldap-sourced memberships are re-synced on every login, manual ones are kept.
-
-**Profile** — users gained `first_name`, `last_name`, `attributes` (JSONB), `email_verified`, `mfa_enabled`.
-
-**UI** — new pages: forgot/reset password, email verification, `/account` (profile, email verification, MFA enrollment with QR code and recovery codes), Groups admin, LDAP group-mapping editor; login form got the second-factor step.
-
-## Release 0.9 - Federation & Polish
-
-Run migration `000009_federation` before starting v0.9.
-
-**Identity brokering** — sign-in through external providers:
-- Admin API `GET/POST/PUT/DELETE /api/v1/identity-providers` (permissions `identity_providers:*`). Types `google` and `github` auto-fill the endpoint URLs; `oidc` accepts any provider (authorize/token/userinfo URLs). Client secrets are stored AES-256-GCM-encrypted and never returned by the API.
-- Flow: `GET /oauth2/broker/{code}/login?continue=...` → external consent → `GET /oauth2/broker/{code}/callback`. The round-trip `state` is HMAC-signed with a 10-minute TTL (CSRF protection).
-- Account resolution: existing federated link → sign-in; otherwise link by email match; otherwise JIT-provision a user (`source: federated`). Local MFA is skipped for brokered logins — the second factor is the external IdP's job.
-- Register the callback `{issuer}/oauth2/broker/{code}/callback` at the provider. The login page shows a "Continue with …" button per enabled provider.
-- Audit: `broker_login_success/failed`, `identity_linked`, `identity_provider_*`.
-
-**Self-service & operations**
-- `POST /api/v1/auth/password/change` (Bearer; `{old_password, new_password}`) — local accounts only.
-- `GET /api/v1/auth/sessions`, `DELETE /api/v1/auth/sessions/{id}`, `DELETE /api/v1/auth/sessions` ("sign out everywhere") — own sessions.
-- `POST /api/v1/oauth/clients/{id}/rotate-secret` (`oauth_clients:update`) — returns the new secret once.
-- Hourly background cleanup of expired sessions, authorization codes, refresh tokens, one-time tokens and login-attempt counters.
-
-Deferred (no consumer yet): SAML 2.0, SCIM, token exchange.
-
-## Release 1.0 - Production Readiness
-
-- **CI** (`.github/workflows/ci.yml`): gofmt check, `go vet`, unit tests, integration tests against a real Postgres service, golangci-lint, Vue build and Docker image build on every PR and push to main.
-- **Automatic migrations**: migrations are embedded in the binary and applied on start when `SSO_MIGRATE_ON_START=true` (via golang-migrate), removing the "run migrations manually" foot-gun.
-- **Integration tests** (`internal/integration`, build tag `integration`): reset schema → migrate → bootstrap → login → OAuth2 code flow with refresh rotation and reuse detection → RBAC enforcement, end-to-end over HTTP against Postgres.
-- **Linting**: `.golangci.yml` (errcheck, govet, staticcheck, unused, ineffassign, gosec, misspell, unconvert), wired into CI.
-- **Trusted-proxy-aware client IP**: `RealIP` middleware resolves `X-Forwarded-For` only from `SSO_TRUSTED_PROXIES`, closing the brute-force/rate-limit bypass.
-- **Observability**: `/metrics` requires an authenticated principal with `metrics:read`; `/health/ready` rejects unavailable, dirty or outdated database schemas; `/health/version` remains public.
-- **Ops hardening**: docker-compose gained a Postgres healthcheck with `depends_on: condition`, `restart: unless-stopped`, migrate-on-start, and secrets via env interpolation instead of hardcoded values. Binary version is injected with `-ldflags -X main.version`.
-
-## Release 1.1 - Security Hardening
-
-Run migration `000010_hardening` before starting v1.1.
-
-- **Revocable access tokens**: the admin API checks the user's `status` + `tokens_invalid_before` through a short-TTL cache. OAuth introspection performs the same account-state and cutoff check for user-delegated access tokens, so password change/reset and "sign out everywhere" revoke already-issued access tokens as well as sessions and refresh credentials.
-  - **Blocked/deleted account** → user access tokens are inactive immediately.
-  - **`tokens_invalid_before` cutoff** → every user access token issued at or before the cutoff is rejected, regardless of `client_id`.
-- **TOTP replay protection**: the last accepted time-step is stored in `users.mfa_last_used_counter`; a code cannot be reused within its validity window.
-- **Federated login safety**: accounts are linked to an external identity only when the provider asserts a verified email (`email_verified`), and never auto-linked to an MFA-protected local account (manual linking required) — closes an account-takeover / MFA-bypass path.
-- **LDAP**: empty passwords are rejected before bind, closing the LDAP "unauthenticated bind" login bypass.
-- **Refresh rotation** is now race-free: rotation is a single atomic `UPDATE ... WHERE rotated_at IS NULL`; losing the race is treated as token reuse and revokes the family.
-- **JWT isolation and rotation**: access tokens are signed with RS256 and carry `kid`, `iss`, `aud`, `exp`, `iat` and explicit `token_type`. Admin API tokens use `<issuer>/api/v1` as audience; OAuth access tokens use their OAuth `client_id`. Active and retiring public keys are published through JWKS.
-- **client_credentials** access tokens carry `token_type=client_credentials` and are refused by the admin API (still valid for their audience and introspection).
-- **Uniform password policy**: minimum 12 characters everywhere (bootstrap, admin create, reset, change), max 128.
-- **Wider rate limiting**: the token bucket now also covers `/api/v1/auth/mfa/verify`, `/api/v1/auth/password/forgot`, `/api/v1/auth/password/reset`, `/api/v1/auth/email/verify`, `/oauth2/revoke` and `/oauth2/introspect`.
-- **Request body cap**: a 1 MiB `BodyLimit` middleware guards JSON/form endpoints against oversized-payload memory exhaustion.
-- **RP-initiated logout**: `id_token_hint` is bounded to 24h by `iat` so a leaked ID token cannot drive logout indefinitely.
-- **`X-Forwarded-For`**: the remaining `clientIP` helpers no longer read the header (RealIP already normalizes `RemoteAddr`), removing a latent spoofing regression.
-
-The request-rate limiter is per instance; horizontally scaled deployments must also enforce a global limit at the trusted ingress. Login lockout state is shared in PostgreSQL. Production validation requires explicit PostgreSQL TLS (`require`, `verify-ca`, or `verify-full`), SMTP STARTTLS, and LDAP over LDAPS or STARTTLS; it also rejects placeholder/equal secrets, a non-HTTPS issuer, and missing SMTP.
+Только незавершённые улучшения перечисляются в [PLAN.md](PLAN.md). Завершённые возможности документируются здесь.

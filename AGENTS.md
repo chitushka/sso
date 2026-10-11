@@ -1,108 +1,108 @@
 # AGENTS.md
 
-## Fixed Stack
+## Язык и документация
 
-Backend:
-- Go 1.25.0
-- Docker builder image: `golang:1.25-alpine`
-- PostgreSQL
+- Вся документация проекта, комментарии в коде и пояснения пользователю должны быть на русском языке.
+- Английский язык допустим только для имён API, идентификаторов, команд, параметров конфигурации и общепринятых технических терминов, когда перевод ухудшает точность.
+- Основная документация проекта хранится в `README.md`: в ней объединены описание, руководство пользователя, архитектура, настройка и эксплуатация.
+- Не создавайте отдельные файлы документации без явной необходимости. Архитектурные и пользовательские сведения добавляйте в `README.md`.
+- `PLAN.md` содержит только ещё не реализованные улучшения и будущий функционал. Завершённые задачи из него удаляйте; историю релизов в нём не ведите.
+- При изменении архитектуры, функций, конфигурации или процедур эксплуатации синхронно обновляйте `README.md`, а при изменении будущих задач — `PLAN.md`.
 
-Frontend:
-- Vue 3
-- JavaScript, not TypeScript
-- Bootstrap 5
-- HTML
-- CSS
-- Vite
-- Axios
-- Pinia
-- Vue Router
+## Зафиксированный стек
 
-## Development Rules
+Серверная часть:
 
-- Security first.
-- Keep Clean Architecture boundaries.
-- Do not introduce TypeScript.
-- Do not store plain passwords, client secrets, LDAP passwords or private tokens.
-- Use Argon2id for passwords and client secrets.
-- Store authorization codes as hashes.
-- Match redirect URI exactly.
-- Public OAuth clients require PKCE S256.
-- Use `gofmt` before committing.
-- Single-tenant by design: do NOT add realms/multi-tenancy. One company, one global space of users, clients, roles and keys.
+- Go 1.25.0.
+- Образ сборщика Docker: `golang:1.25-alpine`.
+- PostgreSQL.
 
-## Release Roadmap
+Клиентская часть:
 
-- v0.1 Core
-- v0.2 LDAP
-- v0.3 OAuth2
-- v0.3.1 Bootstrap fix
-- v0.4 OIDC
-- v0.5 RBAC
-- v0.6 Security hardening
-- v0.7 Admin UI on Vue + Bootstrap
+- Vue 3.
+- JavaScript, без TypeScript.
+- Bootstrap 5.
+- HTML и CSS.
+- Vite.
+- Axios.
+- Pinia.
+- Vue Router.
 
-## RBAC Development Rules
+## Правила разработки
 
-Release 0.5 introduced RBAC.
+- Безопасность имеет наивысший приоритет.
+- Соблюдайте границы чистой архитектуры.
+- Не добавляйте TypeScript.
+- Не храните пароли, секреты клиентов, пароли LDAP и приватные токены в открытом виде.
+- Для паролей и секретов клиентов используйте Argon2id.
+- Коды авторизации храните только в виде хешей.
+- `redirect_uri` должен совпадать посимвольно.
+- Публичные OAuth-клиенты обязаны использовать PKCE S256.
+- Перед фиксацией изменений запускайте `gofmt`.
+- Система рассчитана на одну организацию: не добавляйте realms или мультитенантность. Используется единое глобальное пространство пользователей, клиентов, ролей и ключей.
 
-When adding a new admin API:
+## Правила разработки RBAC
 
-1. Add a permission in migration.
-2. Assign it to the `admin` role.
-3. Protect the route with RBAC middleware.
-4. Add audit events for sensitive changes.
+RBAC является основной моделью авторизации административных API.
 
-Do not create new unprotected admin endpoints.
-## Architecture
+При добавлении нового административного API:
 
-Keep dependencies directed from transport to application/domain ports and then to infrastructure adapters:
+1. Добавьте разрешение в миграцию.
+2. Назначьте его роли `admin`.
+3. Защитите маршрут middleware RBAC.
+4. Добавьте события аудита для чувствительных изменений.
+
+Не создавайте незащищённые административные маршруты.
+
+## Архитектура
+
+Зависимости должны быть направлены от транспорта к портам приложения и домена, а затем к инфраструктурным адаптерам:
 
 ```text
-HTTP handlers/middleware -> application services -> repository interfaces
-                                               <- PostgreSQL/external-service adapters
+HTTP-обработчики/middleware -> сервисы приложения -> интерфейсы репозиториев
+                                                  <- адаптеры PostgreSQL/внешних сервисов
 ```
 
-The composition root is `internal/app`. Domain/application packages must not depend on HTTP handlers or concrete PostgreSQL repositories. Prefer narrow, consumer-owned interfaces and cohesive services. Keep protocol behavior in `oauth`, `oidc`, `ldap`, and `broker`.
+Корень композиции находится в `internal/app`. Пакеты домена и приложения не должны зависеть от HTTP-обработчиков или конкретных репозиториев PostgreSQL. Предпочитайте узкие интерфейсы, принадлежащие потребителю, и связные сервисы. Протокольное поведение размещайте в `oauth`, `oidc`, `ldap` и `broker`.
 
-Backward compatibility with legacy behavior is not required. Remove obsolete behavior and compatibility shims when replacing them with a safer design.
+Обратная совместимость с устаревшим поведением не требуется. При замене на более безопасную реализацию удаляйте устаревшее поведение и переходные прослойки.
 
-## Security Invariants
+## Инварианты безопасности
 
-- Generate opaque credentials with `crypto/rand`; store only hashes for session, refresh, authorization, password-reset and recovery tokens.
-- Encrypt reversible secrets with authenticated encryption. Do not preserve plaintext fallback behavior.
-- Validate token algorithm, issuer, audience/purpose, expiry and current account state as applicable.
-- Password changes/resets, account blocking/deletion and sign-out-everywhere are credential revocation events.
-- TOTP counters and refresh-token rotation must be consumed atomically.
-- Never log credentials, authorization codes, cookies, tokens, reset/verification links, MFA secrets, or sensitive request bodies.
-- Trust forwarding headers only from `SSO_TRUSTED_PROXIES` and strip them before downstream handlers.
-- Production requires an HTTPS issuer, independent non-placeholder secrets, PostgreSQL TLS and configured SMTP.
-- Outbound HTTP, SMTP and LDAP calls require context cancellation and finite timeouts.
-- Keep request body/header limits and HTTP read/write/idle timeouts.
+- Генерируйте непрозрачные учётные данные через `crypto/rand`; токены сессий, обновления, авторизации, сброса пароля и восстановления храните только в виде хешей.
+- Обратимо хранимые секреты шифруйте аутентифицированным шифрованием. Не сохраняйте резервное чтение открытого текста.
+- Проверяйте алгоритм, издателя, аудиторию или назначение, срок действия токена и актуальное состояние учётной записи, когда это применимо.
+- Смена и сброс пароля, блокировка и удаление учётной записи, а также выход на всех устройствах должны отзывать учётные данные.
+- Счётчики TOTP и ротация refresh-токенов должны потребляться атомарно.
+- Никогда не журналируйте учётные данные, коды авторизации, cookie, токены, ссылки сброса и подтверждения, секреты MFA или чувствительные тела запросов.
+- Доверяйте заголовкам прокси только от адресов из `SSO_TRUSTED_PROXIES` и удаляйте их перед передачей следующим обработчикам.
+- В production обязательны HTTPS issuer, независимые секреты без значений-заглушек, TLS для PostgreSQL и настроенный SMTP.
+- Исходящие HTTP-, SMTP- и LDAP-вызовы должны поддерживать отмену через контекст и иметь конечные тайм-ауты.
+- Сохраняйте ограничения размеров тела и заголовков запроса, а также тайм-ауты чтения, записи и простоя HTTP.
 
-## Configuration Rules
+## Правила конфигурации
 
-- Use only the `SSO_` namespace.
-- Add a setting only when deployments genuinely need to vary it.
-- Prefer secure unconditional behavior over security feature flags.
-- Validate configuration at startup and fail closed.
-- Keep `.env.example`, Docker Compose, README and `internal/config` synchronized.
-- Do not add aliases for removed or legacy variables.
+- Используйте только пространство имён `SSO_`.
+- Добавляйте настройку лишь тогда, когда её действительно требуется менять между развёртываниями.
+- Предпочитайте безусловно безопасное поведение флагам безопасности.
+- Проверяйте конфигурацию при запуске и завершайте работу при ошибке.
+- Поддерживайте согласованность `.env.example`, Docker Compose, `README.md` и `internal/config`.
+- Не добавляйте псевдонимы удалённых или устаревших переменных.
 
-## Database Rules
+## Правила базы данных
 
-- Schema changes use ordered up/down migrations.
-- Security-sensitive read/modify/write operations must be atomic in PostgreSQL.
-- Do not edit an already released migration when a new forward migration is required.
+- Изменения схемы оформляйте упорядоченными up/down-миграциями.
+- Чувствительные к безопасности операции чтения-изменения-записи должны быть атомарными в PostgreSQL.
+- Не редактируйте уже выпущенную миграцию, если требуется новая прямая миграция.
 
-## Quality Gates
+## Проверки качества
 
-Before recording a change:
+Перед фиксацией изменений:
 
-- Run `gofmt` on changed Go files.
-- Run `go test ./...` and `go vet ./...`.
-- Run integration tests when PostgreSQL is available.
-- Run `govulncheck ./...` for dependency or security changes.
-- For frontend changes run `npm ci`, `npm audit --omit=dev`, and `npm run build`.
-- Run `git diff --check`.
-- Keep this file current when architecture, security invariants, stack, configuration or required checks change.
+- Запустите `gofmt` для изменённых файлов Go.
+- Запустите `go test ./...` и `go vet ./...`.
+- При доступном PostgreSQL запустите интеграционные тесты.
+- Для изменений зависимостей или безопасности запустите `govulncheck ./...`.
+- Для изменений фронтенда запустите `npm ci`, `npm audit --omit=dev` и `npm run build`.
+- Запустите `git diff --check`.
+- Обновите этот файл при изменении архитектуры, инвариантов безопасности, стека, конфигурации или обязательных проверок.
