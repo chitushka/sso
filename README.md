@@ -314,6 +314,7 @@ git diff --check
 ```
 
 Для фронтенда: `cd web/admin`, затем `npm ci`, `npm audit --omit=dev` и `npm run build`.
+CI выполняет аудит production-зависимостей фронтенда и отклоняет сборку при обнаружении известных уязвимостей.
 
 Интеграционные тесты находятся в `internal/integration`, используют build tag `integration` и требуют PostgreSQL.
 
