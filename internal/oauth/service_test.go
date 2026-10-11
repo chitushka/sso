@@ -181,7 +181,10 @@ func (f *fakeUsers) AccessState(_ context.Context, _ uuid.UUID) (bool, *time.Tim
 }
 func (f *fakeUsers) Count(_ context.Context) (int64, error) { return 1, nil }
 
-type fakeSessions struct{ s auth.Session }
+type fakeSessions struct {
+	s           auth.Session
+	revokedHash string
+}
 
 func (f *fakeSessions) Create(_ context.Context, s auth.Session) (auth.Session, error) {
 	return s, nil
@@ -192,7 +195,14 @@ func (f *fakeSessions) FindByTokenHash(_ context.Context, hash string) (auth.Ses
 	}
 	return f.s, nil
 }
-func (f *fakeSessions) RevokeByTokenHash(_ context.Context, _ string) error  { return nil }
+func (f *fakeSessions) RevokeByTokenHash(_ context.Context, hash string) error {
+	f.revokedHash = hash
+	if hash == f.s.TokenHash {
+		now := time.Now()
+		f.s.RevokedAt = &now
+	}
+	return nil
+}
 func (f *fakeSessions) RevokeAllByUser(_ context.Context, _ uuid.UUID) error { return nil }
 
 type fakeTokens struct{}
@@ -494,5 +504,66 @@ func TestIntrospectionRevokesOAuthAccessTokenAtCredentialCutoff(t *testing.T) {
 	}
 	if res["active"] != false {
 		t.Fatalf("credential cutoff must revoke issued OAuth access token: %v", res)
+	}
+}
+
+func TestInactiveUserCannotAuthorize(t *testing.T) {
+	statuses := []users.Status{users.StatusBlocked, users.StatusPending, users.StatusDeleted}
+	for _, status := range statuses {
+		t.Run(string(status), func(t *testing.T) {
+			svc, repo, _, session := setup(t, confidentialClient())
+			svc.users.(*fakeUsers).u.Status = status
+
+			_, err := svc.Authorize(context.Background(), AuthorizeInput{ResponseType: "code", ClientID: "web-app", RedirectURI: "https://app.example.com/cb", Scope: "openid", SessionToken: session})
+			if !errors.Is(err, ErrLoginRequired) {
+				t.Fatalf("want ErrLoginRequired, got %v", err)
+			}
+			sessions := svc.sessions.(*fakeSessions)
+			if sessions.revokedHash != auth.HashSessionToken(session) {
+				t.Fatal("inactive user's session was not revoked")
+			}
+			if len(repo.codes) != 0 {
+				t.Fatal("inactive user received an authorization code")
+			}
+		})
+	}
+}
+
+func TestInactiveUserCannotUseConsent(t *testing.T) {
+	statuses := []users.Status{users.StatusBlocked, users.StatusPending, users.StatusDeleted}
+	for _, status := range statuses {
+		t.Run(string(status), func(t *testing.T) {
+			svc, repo, _, session := setup(t, confidentialClient())
+			svc.users.(*fakeUsers).u.Status = status
+
+			if _, err := svc.GetConsentInfo(context.Background(), session, "web-app", "openid"); !errors.Is(err, ErrLoginRequired) {
+				t.Fatalf("consent info: want ErrLoginRequired, got %v", err)
+			}
+			if err := svc.GrantConsent(context.Background(), session, "web-app", "openid"); !errors.Is(err, ErrLoginRequired) {
+				t.Fatalf("grant consent: want ErrLoginRequired, got %v", err)
+			}
+			if len(repo.consents) != 0 {
+				t.Fatal("inactive user saved consent")
+			}
+		})
+	}
+}
+
+func TestAuthorizationCodeExchangeRejectsInactiveUser(t *testing.T) {
+	statuses := []users.Status{users.StatusBlocked, users.StatusPending, users.StatusDeleted}
+	for _, status := range statuses {
+		t.Run(string(status), func(t *testing.T) {
+			svc, repo, _, session := setup(t, confidentialClient())
+			result := authorize(t, svc, session, "openid")
+			svc.users.(*fakeUsers).u.Status = status
+
+			_, err := svc.Token(context.Background(), TokenInput{GrantType: "authorization_code", Code: result.Code, RedirectURI: "https://app.example.com/cb", ClientID: "web-app", ClientSecret: "correct-secret"})
+			if !errors.Is(err, ErrInvalidGrant) {
+				t.Fatalf("want ErrInvalidGrant, got %v", err)
+			}
+			if len(repo.refresh) != 0 {
+				t.Fatal("inactive user received a refresh token")
+			}
+		})
 	}
 }

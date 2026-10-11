@@ -183,13 +183,13 @@ func (s *Service) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeRe
 	if c.Type == ClientPublic && (in.CodeChallenge == "" || in.CodeChallengeMethod != "S256") {
 		return AuthorizeResult{}, errors.New("PKCE S256 required")
 	}
-	sess, err := s.sessions.FindByTokenHash(ctx, auth.HashSessionToken(in.SessionToken))
-	if err != nil || sess.RevokedAt != nil || time.Now().After(sess.ExpiresAt) {
+	userID, err := s.sessionUser(ctx, in.SessionToken)
+	if err != nil {
 		return AuthorizeResult{}, ErrLoginRequired
 	}
 	if !c.SkipConsent {
 		granted := ""
-		if consent, cerr := s.repo.GetConsent(ctx, sess.UserID, c.ClientID); cerr == nil {
+		if consent, cerr := s.repo.GetConsent(ctx, userID, c.ClientID); cerr == nil {
 			granted = consent.Scopes
 		}
 		if !scopeCovered(in.Scope, granted) {
@@ -200,7 +200,7 @@ func (s *Service) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeRe
 	if err != nil {
 		return AuthorizeResult{}, err
 	}
-	_, err = s.repo.CreateCode(ctx, AuthorizationCode{CodeHash: hash, ClientID: c.ClientID, UserID: sess.UserID, RedirectURI: in.RedirectURI, Scope: in.Scope, CodeChallenge: in.CodeChallenge, CodeChallengeMethod: in.CodeChallengeMethod, Nonce: in.Nonce, ExpiresAt: time.Now().Add(5 * time.Minute)})
+	_, err = s.repo.CreateCode(ctx, AuthorizationCode{CodeHash: hash, ClientID: c.ClientID, UserID: userID, RedirectURI: in.RedirectURI, Scope: in.Scope, CodeChallenge: in.CodeChallenge, CodeChallengeMethod: in.CodeChallengeMethod, Nonce: in.Nonce, ExpiresAt: time.Now().Add(5 * time.Minute)})
 	if err != nil {
 		return AuthorizeResult{}, err
 	}
@@ -296,6 +296,9 @@ func (s *Service) codeGrant(ctx context.Context, in TokenInput) (TokenResult, er
 	u, err := s.users.FindByID(ctx, code.UserID)
 	if err != nil {
 		return TokenResult{}, err
+	}
+	if u.Status != users.StatusActive {
+		return TokenResult{}, ErrInvalidGrant
 	}
 	return s.issue(ctx, u, c, code.Scope, code.Nonce, code.CreatedAt, uuid.New())
 }
@@ -427,8 +430,21 @@ type ConsentInfo struct {
 }
 
 func (s *Service) sessionUser(ctx context.Context, sessionToken string) (uuid.UUID, error) {
-	sess, err := s.sessions.FindByTokenHash(ctx, auth.HashSessionToken(sessionToken))
+	hash := auth.HashSessionToken(sessionToken)
+	sess, err := s.sessions.FindByTokenHash(ctx, hash)
 	if err != nil || sess.RevokedAt != nil || time.Now().After(sess.ExpiresAt) {
+		return uuid.Nil, ErrLoginRequired
+	}
+	u, err := s.users.FindByID(ctx, sess.UserID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			_ = s.sessions.RevokeByTokenHash(ctx, hash)
+			return uuid.Nil, ErrLoginRequired
+		}
+		return uuid.Nil, err
+	}
+	if u.Status != users.StatusActive {
+		_ = s.sessions.RevokeByTokenHash(ctx, hash)
 		return uuid.Nil, ErrLoginRequired
 	}
 	return sess.UserID, nil

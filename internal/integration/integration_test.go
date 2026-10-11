@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/chitushka/sso/internal/app"
+	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/config"
 	"github.com/chitushka/sso/internal/oidc"
 	"github.com/chitushka/sso/internal/secrets"
@@ -112,6 +113,44 @@ func doJSON(t *testing.T, method, path, credential string, body any, out any) *h
 		}
 	}
 	return resp
+}
+
+func loginSession(t *testing.T, username, password string) loginResult {
+	t.Helper()
+	var result loginResult
+	resp := doJSON(t, http.MethodPost, "/api/v1/auth/login", "", map[string]string{"username": username, "password": password}, &result)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login %s: %d", username, resp.StatusCode)
+	}
+	for _, cookie := range resp.Cookies() {
+		switch cookie.Name {
+		case "sso_session":
+			result.SessionToken = cookie.Value
+		case "sso_csrf":
+			result.CSRFToken = cookie.Value
+		}
+	}
+	if result.SessionToken == "" || result.CSRFToken == "" {
+		t.Fatalf("login %s did not set session cookies", username)
+	}
+	return result
+}
+
+func requestAuthorizationCode(t *testing.T, sessionToken string) (int, string) {
+	t.Helper()
+	query := url.Values{"response_type": {"code"}, "client_id": {"test-app"}, "redirect_uri": {"https://client.example/cb"}, "scope": {"openid profile"}, "state": {"inactive-test"}}
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/oauth2/authorize?"+query.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: "sso_session", Value: sessionToken})
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	location, _ := url.Parse(resp.Header.Get("Location"))
+	return resp.StatusCode, location.Query().Get("code")
 }
 
 type loginResult struct {
@@ -282,7 +321,43 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("wrong secret must 401, got %d", status)
 	}
 
-	// 7. RBAC: a plain user has no admin permissions.
+	// 7. Заблокированные, ожидающие активации и удалённые пользователи не могут
+	// авторизоваться или обменять код, созданный до смены статуса. Сессия отзывается.
+	for _, userStatus := range []users.Status{users.StatusBlocked, users.StatusPending, users.StatusDeleted} {
+		username := "oauth-" + string(userStatus)
+		password := "InactivePassword1!"
+		if resp := doJSON(t, http.MethodPost, "/api/v1/users", admin.credential(), map[string]string{
+			"username": username,
+			"email":    username + "@example.org",
+			"password": password,
+		}, nil); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create %s user: %d", userStatus, resp.StatusCode)
+		}
+		userSession := loginSession(t, username, password)
+		authorizeStatus, inactiveCode := requestAuthorizationCode(t, userSession.SessionToken)
+		if authorizeStatus != http.StatusFound || inactiveCode == "" {
+			t.Fatalf("initial authorize for %s user: status=%d code=%q", userStatus, authorizeStatus, inactiveCode)
+		}
+		if _, err := pool.Exec(context.Background(), "UPDATE users SET status=$2 WHERE username=$1", username, userStatus); err != nil {
+			t.Fatal(err)
+		}
+		if status, _ := requestAuthorizationCode(t, userSession.SessionToken); status != http.StatusUnauthorized {
+			t.Fatalf("%s user authorize must return 401, got %d", userStatus, status)
+		}
+		var revoked bool
+		if err := pool.QueryRow(context.Background(), "SELECT revoked_at IS NOT NULL FROM sessions WHERE token_hash=$1", auth.HashSessionToken(userSession.SessionToken)).Scan(&revoked); err != nil {
+			t.Fatal(err)
+		}
+		if !revoked {
+			t.Fatalf("%s user session was not revoked", userStatus)
+		}
+		status, body := tokenReq(url.Values{"grant_type": {"authorization_code"}, "code": {inactiveCode}, "redirect_uri": {"https://client.example/cb"}, "client_id": {"test-app"}, "client_secret": {created.ClientSecret}})
+		if status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+			t.Fatalf("%s user code exchange: status=%d body=%v", userStatus, status, body)
+		}
+	}
+
+	// 8. RBAC: a plain user has no admin permissions.
 	if resp := doJSON(t, "POST", "/api/v1/users", admin.credential(), map[string]string{"username": "bob", "email": "bob@example.org", "password": "BobPassword1!"}, nil); resp.StatusCode != 201 {
 		t.Fatalf("create user: %d", resp.StatusCode)
 	}
@@ -306,7 +381,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("admin must list users, got %d", resp.StatusCode)
 	}
 
-	// 8. Two instances racing to rotate an old signing key must commit exactly
+	// 9. Two instances racing to rotate an old signing key must commit exactly
 	// one replacement and keep exactly one active key.
 	if _, err := pool.Exec(context.Background(), `UPDATE oidc_signing_keys SET created_at=now()-interval '31 days' WHERE status='active'`); err != nil {
 		t.Fatal(err)
@@ -340,7 +415,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("concurrent rotation left active=%d published=%d", activeKeys, publishedKeys)
 	}
 
-	// 9. Offline encryption-key rotation re-encrypts every secret class and
+	// 10. Offline encryption-key rotation re-encrypts every secret class and
 	// rejects the old key afterwards.
 	mfaCiphertext, err := oldEncryptor.Encrypt("mfa-seed")
 	if err != nil {
@@ -382,7 +457,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
-	// 10. Migrations are idempotent on restart (MigrateOnStart with no changes).
+	// 11. Migrations are idempotent on restart (MigrateOnStart with no changes).
 	if !strings.Contains(server.URL, "http://") {
 		t.Fatal("sanity")
 	}
