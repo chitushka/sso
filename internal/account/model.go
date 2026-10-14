@@ -31,6 +31,7 @@ type RecoveryCodeRepository interface {
 
 // AtomicRepository owns security-sensitive multi-table state transitions.
 type AtomicRepository interface {
+	RotateEmailVerification(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt, notBefore time.Time) error
 	ResetPassword(ctx context.Context, tokenHash, passwordHash string) (uuid.UUID, error)
 	ChangePassword(ctx context.Context, userID uuid.UUID, currentHash, newHash string) error
 	VerifyEmail(ctx context.Context, tokenHash string) (uuid.UUID, error)

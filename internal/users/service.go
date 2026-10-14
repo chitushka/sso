@@ -2,8 +2,14 @@ package users
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/google/uuid"
@@ -12,6 +18,12 @@ import (
 type PasswordHasher interface {
 	Hash(password string) (string, error)
 }
+type ActivationMailer interface {
+	Send(ctx context.Context, to, subject, body string) error
+}
+type PendingCreator interface {
+	CreatePending(ctx context.Context, u User, verificationTokenHash string, expiresAt time.Time) (User, error)
+}
 
 // TokenCacheInvalidator немедленно удаляет закэшированное состояние доступа.
 type TokenCacheInvalidator interface {
@@ -19,13 +31,22 @@ type TokenCacheInvalidator interface {
 }
 type Service struct {
 	repo       Repository
+	pending    PendingCreator
 	passwords  PasswordHasher
 	audit      audit.Repository
 	tokenCache TokenCacheInvalidator
+	mail       ActivationMailer
+	issuer     string
 }
 
 func NewService(repo Repository, passwords PasswordHasher, audit audit.Repository) *Service {
-	return &Service{repo: repo, passwords: passwords, audit: audit}
+	pending, _ := repo.(PendingCreator)
+	return &Service{repo: repo, pending: pending, passwords: passwords, audit: audit}
+}
+func (s *Service) WithEmailActivation(mail ActivationMailer, issuer string) *Service {
+	s.mail = mail
+	s.issuer = strings.TrimRight(issuer, "/")
+	return s
 }
 
 // WithTokenCache подключает кэш состояния доступа к операциям смены статуса.
@@ -65,15 +86,57 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput, ip, ua string)
 	if err != nil {
 		return User{}, err
 	}
-	u, err := s.repo.Create(ctx, User{Username: in.Username, Email: in.Email, PasswordHash: &h, Status: in.Status, Source: SourceLocal, FirstName: in.FirstName, LastName: in.LastName, Attributes: in.Attributes})
-	if err != nil {
+	u, err := s.createLocal(ctx, in, h)
+	if err != nil && u.ID == uuid.Nil {
 		return User{}, err
 	}
 	if err := audit.Write(ctx, s.audit, audit.Event{Action: "user_created", TargetType: "user", TargetID: u.ID.String(), IP: ip, UserAgent: ua}); err != nil {
 		return User{}, err
 	}
+	if err != nil {
+		return u, err
+	}
 	return u, nil
 }
+func (s *Service) createLocal(ctx context.Context, in CreateUserInput, passwordHash string) (User, error) {
+	u := User{Username: in.Username, Email: in.Email, PasswordHash: &passwordHash, Status: in.Status, Source: SourceLocal, FirstName: in.FirstName, LastName: in.LastName, Attributes: in.Attributes}
+	if in.Status != StatusPending {
+		return s.repo.Create(ctx, u)
+	}
+	return s.createPending(ctx, u)
+}
+
+func (s *Service) createPending(ctx context.Context, u User) (User, error) {
+	if s.pending == nil || s.mail == nil || s.issuer == "" {
+		return User{}, errors.New("email activation is not configured")
+	}
+	raw, hash, err := newActivationToken()
+	if err != nil {
+		return User{}, err
+	}
+	created, err := s.pending.CreatePending(ctx, u, hash, time.Now().Add(24*time.Hour))
+	if err != nil {
+		return User{}, err
+	}
+	return created, s.sendActivation(ctx, created, raw)
+}
+
+func (s *Service) sendActivation(ctx context.Context, u User, raw string) error {
+	link := fmt.Sprintf("%s/verify-email?token=%s", s.issuer, raw)
+	body := fmt.Sprintf("Здравствуйте, %s! Подтвердите адрес электронной почты, открыв ссылку в течение 24 часов: %s", u.Username, link)
+	return s.mail.Send(ctx, u.Email, "Подтверждение адреса электронной почты", body)
+}
+
+func newActivationToken() (string, string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", "", err
+	}
+	raw := base64.RawURLEncoding.EncodeToString(b)
+	sum := sha256.Sum256([]byte(raw))
+	return raw, hex.EncodeToString(sum[:]), nil
+}
+
 func (s *Service) List(ctx context.Context, limit, offset int) ([]User, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50

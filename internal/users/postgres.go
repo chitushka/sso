@@ -46,6 +46,37 @@ func (r *PostgresRepository) Create(ctx context.Context, u User) (User, error) {
 	}
 	return x, nil
 }
+func (r *PostgresRepository) CreatePending(ctx context.Context, u User, tokenHash string, expiresAt time.Time) (User, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return User{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	return r.createPending(ctx, tx, u, tokenHash, expiresAt)
+}
+
+func (r *PostgresRepository) createPending(ctx context.Context, tx pgx.Tx, u User, tokenHash string, expiresAt time.Time) (User, error) {
+	if u.Attributes == nil {
+		u.Attributes = map[string]string{}
+	}
+	query := `INSERT INTO users(username,email,password_hash,status,source,first_name,last_name,attributes)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING ` + userCols
+	out, err := scanUser(tx.QueryRow(ctx, query, u.Username, u.Email, u.PasswordHash,
+		u.Status, u.Source, u.FirstName, u.LastName, u.Attributes))
+	if err != nil {
+		var pe *pgconn.PgError
+		if errors.As(err, &pe) && pe.Code == "23505" {
+			return User{}, storage.ErrConflict
+		}
+		return User{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO one_time_tokens(user_id,purpose,token_hash,expires_at)
+		VALUES($1,'email_verify',$2,$3)`, out.ID, tokenHash, expiresAt); err != nil {
+		return User{}, err
+	}
+	return out, tx.Commit(ctx)
+}
+
 func (r *PostgresRepository) UpsertLDAP(ctx context.Context, u User) (User, error) {
 	if u.LDAPProviderID == nil || u.LDAPDN == nil || *u.LDAPDN == "" {
 		return User{}, errors.New("ldap provider and immutable dn are required")

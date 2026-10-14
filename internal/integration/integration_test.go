@@ -23,7 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chitushka/sso/internal/account"
 	"github.com/chitushka/sso/internal/app"
+	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/config"
 	"github.com/chitushka/sso/internal/oauth"
@@ -41,6 +43,15 @@ var (
 	client          *http.Client
 	testDatabaseURL string
 )
+
+type captureMailer struct {
+	body string
+}
+
+func (m *captureMailer) Send(_ context.Context, _, _, body string) error {
+	m.body = body
+	return nil
+}
 
 func TestMain(m *testing.M) {
 	dbURL := os.Getenv("SSO_TEST_DATABASE_URL")
@@ -169,6 +180,51 @@ func (r loginResult) credential() string {
 	return "session:" + r.SessionToken + ":" + r.CSRFToken
 }
 
+func pendingActivationEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	userRepo := users.NewPostgresRepository(pool)
+	auditRepo := audit.NewPostgresRepository(pool)
+	hasher := auth.NewArgon2idHasher()
+	mail := &captureMailer{}
+	userSvc := users.NewService(userRepo, hasher, auditRepo).WithEmailActivation(mail, "https://sso.example.org")
+	created, err := userSvc.Create(ctx, users.CreateUserInput{Username: "pending-e2e", Email: "pending-e2e@example.org", Password: "PendingPassword1!", Status: users.StatusPending}, "127.0.0.1", "integration-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "token="
+	pos := strings.LastIndex(mail.body, marker)
+	if pos < 0 {
+		t.Fatalf("письмо не содержит verification-токен: %q", mail.body)
+	}
+	firstToken := strings.TrimSpace(mail.body[pos+len(marker):])
+	accountSvc := account.NewService(userRepo, account.NewPostgresTokenRepository(pool), account.NewPostgresRecoveryCodeRepository(pool), hasher, secrets.NewAESGCM("integration-test-enc-key-32chars-ok!"), mail, auditRepo, "https://sso.example.org")
+	if err := accountSvc.RequestEmailVerification(ctx, created.ID); !errors.Is(err, account.ErrVerificationRateLimited) {
+		t.Fatalf("повторное письмо не ограничено: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE one_time_tokens SET created_at=now()-interval '2 minutes' WHERE user_id=$1`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := accountSvc.RequestEmailVerification(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	pos = strings.LastIndex(mail.body, marker)
+	token := strings.TrimSpace(mail.body[pos+len(marker):])
+	if err := accountSvc.VerifyEmail(ctx, firstToken); !errors.Is(err, account.ErrInvalidToken) {
+		t.Fatalf("предыдущая ссылка не аннулирована: %v", err)
+	}
+	if err := accountSvc.VerifyEmail(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	if resp := doJSON(t, http.MethodPost, "/api/v1/auth/login", "", map[string]string{"username": "pending-e2e", "password": "PendingPassword1!"}, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("вход после активации: %d", resp.StatusCode)
+	}
+}
+
 func TestEndToEnd(t *testing.T) {
 	// 1. Health and discovery.
 	if resp := doJSON(t, "GET", "/health/ready", "", nil, nil); resp.StatusCode != 200 {
@@ -203,6 +259,7 @@ func TestEndToEnd(t *testing.T) {
 	if counts[http.StatusCreated] != 1 || counts[http.StatusConflict] != 1 {
 		t.Fatalf("concurrent bootstrap statuses: %v", counts)
 	}
+	pendingActivationEndToEnd(t)
 
 	// An LDAP identity may not attach itself to the existing local admin by
 	// presenting the same mutable username.

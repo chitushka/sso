@@ -17,15 +17,17 @@ import (
 )
 
 var (
-	ErrInvalidToken = errors.New("invalid or expired token")
-	ErrInvalidCode  = errors.New("invalid code")
-	ErrMFAState     = errors.New("mfa is not in the required state")
+	ErrInvalidToken            = errors.New("invalid or expired token")
+	ErrInvalidCode             = errors.New("invalid code")
+	ErrMFAState                = errors.New("mfa is not in the required state")
+	ErrVerificationRateLimited = errors.New("verification email was sent recently")
 )
 
 const (
-	resetTTL  = time.Hour
-	verifyTTL = 24 * time.Hour
-	issuerApp = "SSO"
+	resetTTL       = time.Hour
+	verifyTTL      = 24 * time.Hour
+	verifyCooldown = time.Minute
+	issuerApp      = "SSO"
 )
 
 // TokenCacheInvalidator evicts a user's cached access state so a password reset
@@ -141,12 +143,25 @@ func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID
 	if err != nil {
 		return err
 	}
-	if err := s.tokens.Create(ctx, u.ID, PurposeEmailVerify, hash, time.Now().Add(verifyTTL)); err != nil {
+	now := time.Now()
+	if err := s.tokens.RotateEmailVerification(ctx, u.ID, hash, now.Add(verifyTTL), now.Add(-verifyCooldown)); err != nil {
 		return err
 	}
 	link := fmt.Sprintf("%s/verify-email?token=%s", s.issuer, raw)
 	body := fmt.Sprintf("Hello %s,\n\nConfirm your email address by opening the link below within 24 hours:\n\n%s", u.Username, link)
 	return s.mail.Send(ctx, u.Email, "Verify your email", body)
+}
+
+// ResendEmailVerification не раскрывает наличие учётной записи вызывающему.
+func (s *Service) ResendEmailVerification(ctx context.Context, login string) {
+	u, err := s.users.FindByUsername(ctx, login)
+	if err != nil {
+		u, err = s.users.FindByEmail(ctx, login)
+	}
+	if err != nil || u.Source != users.SourceLocal || u.Status != users.StatusPending || u.EmailVerified {
+		return
+	}
+	_ = s.RequestEmailVerification(ctx, u.ID)
 }
 
 func (s *Service) VerifyEmail(ctx context.Context, rawToken string) error {

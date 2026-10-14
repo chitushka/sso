@@ -79,7 +79,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	recoveryRepo := account.NewPostgresRecoveryCodeRepository(pool)
 	accountSvc := account.NewService(userRepo, tokenRepo, recoveryRepo, passwords, encryptor, mail, auditRepo, cfg.OIDC.Issuer)
 	authSvc := auth.NewService(userRepo, sessionRepo, auditRepo, passwords, tokens, cfg.Token.SessionTTL).WithLDAP(ldapAuth).WithLockout(loginAttempts).WithMFA(accountSvc, tokens)
-	userSvc := users.NewService(userRepo, passwords, auditRepo).WithTokenCache(accessCache)
+	userSvc := users.NewService(userRepo, passwords, auditRepo).WithTokenCache(accessCache).WithEmailActivation(mail, cfg.OIDC.Issuer)
 	bootstrapSvc := bootstrap.NewService(userRepo, passwords, rbacRepo, auditRepo).WithAtomic(bootstrap.NewPostgresRepository(pool))
 	oauthRepo := oauth.NewPostgresRepository(pool, passwords)
 	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, tokens, auditRepo, passwords).WithTokenVerifier(tokens).WithRefreshTTL(cfg.Token.RefreshTTL)
@@ -101,6 +101,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 		"/api/v1/auth/password/forgot",
 		"/api/v1/auth/password/reset",
 		"/api/v1/auth/email/verify",
+		"/api/v1/auth/email/resend",
 		"/oauth2/token",
 		"/oauth2/revoke",
 		"/oauth2/introspect",

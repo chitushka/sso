@@ -67,6 +67,17 @@ func RegisterRoutes(r chi.Router, svc *Service, authSvc *auth.Service, bearerAut
 	})
 
 	r.Route("/api/v1/auth/email", func(r chi.Router) {
+		r.Post("/resend", func(w http.ResponseWriter, req *http.Request) {
+			var body struct {
+				Login string `json:"login"`
+			}
+			if err := httpx.Decode(req, &body); err != nil || strings.TrimSpace(body.Login) == "" {
+				httpx.Error(w, 400, "login is required")
+				return
+			}
+			svc.ResendEmailVerification(req.Context(), body.Login)
+			httpx.JSON(w, 200, map[string]string{"status": "ok"})
+		})
 		r.With(bearerAuth).Post("/request", func(w http.ResponseWriter, req *http.Request) {
 			userID, ok := currentUser(w, req)
 			if !ok {

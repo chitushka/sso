@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/chitushka/sso/internal/storage"
 	"github.com/google/uuid"
@@ -62,6 +63,40 @@ func replacePasswordAndRevoke(ctx context.Context, tx pgx.Tx, userID uuid.UUID, 
 	}
 	_, err = tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, userID)
 	return err
+}
+
+func (r *PostgresTokenRepository) RotateEmailVerification(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt, notBefore time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	return rotateEmailVerification(ctx, tx, userID, tokenHash, expiresAt, notBefore)
+}
+
+func rotateEmailVerification(ctx context.Context, tx pgx.Tx, userID uuid.UUID, tokenHash string, expiresAt, notBefore time.Time) error {
+	var lockedID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&lockedID); err != nil {
+		return err
+	}
+	var recent bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM one_time_tokens
+		WHERE user_id=$1 AND purpose=$2 AND used_at IS NULL AND created_at>$3)`,
+		userID, PurposeEmailVerify, notBefore).Scan(&recent); err != nil {
+		return err
+	}
+	if recent {
+		return ErrVerificationRateLimited
+	}
+	if _, err := tx.Exec(ctx, `UPDATE one_time_tokens SET used_at=now()
+		WHERE user_id=$1 AND purpose=$2 AND used_at IS NULL`, userID, PurposeEmailVerify); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO one_time_tokens(user_id,purpose,token_hash,expires_at)
+		VALUES($1,$2,$3,$4)`, userID, PurposeEmailVerify, tokenHash, expiresAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *PostgresTokenRepository) VerifyEmail(ctx context.Context, tokenHash string) (uuid.UUID, error) {
