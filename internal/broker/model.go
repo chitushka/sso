@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chitushka/sso/internal/users"
 	"github.com/google/uuid"
 )
 
@@ -29,12 +30,17 @@ type Provider struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-type FederatedIdentity struct {
-	ProviderID      uuid.UUID `json:"provider_id"`
-	ExternalSubject string    `json:"external_subject"`
-	UserID          uuid.UUID `json:"user_id"`
-	Email           string    `json:"email"`
-	CreatedAt       time.Time `json:"created_at"`
+type IdentityClaims struct {
+	Subject       string
+	Email         string
+	EmailVerified bool
+	Username      string
+}
+
+type IdentityResolution struct {
+	User            users.User
+	UserCreated     bool
+	IdentityCreated bool
 }
 
 type Repository interface {
@@ -43,8 +49,7 @@ type Repository interface {
 	Create(ctx context.Context, p Provider) (Provider, error)
 	Update(ctx context.Context, p Provider) (Provider, error)
 	Delete(ctx context.Context, id uuid.UUID) error
-	FindIdentity(ctx context.Context, providerID uuid.UUID, subject string) (FederatedIdentity, error)
-	LinkIdentity(ctx context.Context, fi FederatedIdentity) error
+	ResolveIdentity(ctx context.Context, provider Provider, claims IdentityClaims) (IdentityResolution, error)
 }
 
 // applyPreset fills the endpoint URLs for well-known provider types so admins

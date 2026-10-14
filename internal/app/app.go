@@ -123,7 +123,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	audit.RegisterRoutes(r, auditRepo, bearer, require)
 	account.RegisterRoutes(r, accountSvc, authSvc, bearer)
 	brokerRepo := broker.NewPostgresRepository(pool, encryptor)
-	brokerSvc := broker.NewService(brokerRepo, userRepo, authSvc, auditRepo, cfg.OIDC.Issuer, []byte(cfg.Security.JWTSecret))
+	brokerSvc := broker.NewService(brokerRepo, authSvc, auditRepo, cfg.OIDC.Issuer, []byte(cfg.Security.JWTSecret))
 	broker.RegisterRoutes(r, brokerSvc, bearer, require)
 	startCleanup(ctx, pool, logger)
 	registerSPA(r, logger)

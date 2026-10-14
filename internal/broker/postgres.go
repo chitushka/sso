@@ -2,10 +2,14 @@ package broker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"strings"
 
 	"github.com/chitushka/sso/internal/secrets"
 	"github.com/chitushka/sso/internal/storage"
+	"github.com/chitushka/sso/internal/users"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -22,6 +26,22 @@ func NewPostgresRepository(pool *pgxpool.Pool, encryptor secrets.Encryptor) *Pos
 }
 
 const providerCols = "id,code,name,type,client_id,client_secret,authorize_url,token_url,userinfo_url,scopes,enabled,created_at,updated_at"
+const brokerUserCols = "id,username,email,password_hash,status,source,first_name,last_name,attributes,email_verified,mfa_enabled,mfa_secret,mfa_last_used_counter,ldap_provider_id,ldap_dn,tokens_invalid_before,created_at,updated_at,last_login_at"
+
+func scanResolvedUser(row pgx.Row) (users.User, error) {
+	var u users.User
+	err := row.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Status, &u.Source,
+		&u.FirstName, &u.LastName, &u.Attributes, &u.EmailVerified, &u.MFAEnabled,
+		&u.MFASecret, &u.MFALastUsedCounter, &u.LDAPProviderID, &u.LDAPDN,
+		&u.TokensInvalidBefore, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return u, storage.ErrNotFound
+	}
+	if u.Attributes == nil {
+		u.Attributes = map[string]string{}
+	}
+	return u, err
+}
 
 func (r *PostgresRepository) scanProvider(row pgx.Row) (Provider, error) {
 	var p Provider
@@ -90,15 +110,115 @@ func (r *PostgresRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	}
 	return err
 }
-func (r *PostgresRepository) FindIdentity(ctx context.Context, providerID uuid.UUID, subject string) (FederatedIdentity, error) {
-	var fi FederatedIdentity
-	err := r.pool.QueryRow(ctx, `SELECT provider_id,external_subject,user_id,email,created_at FROM federated_identities WHERE provider_id=$1 AND external_subject=$2`, providerID, subject).Scan(&fi.ProviderID, &fi.ExternalSubject, &fi.UserID, &fi.Email, &fi.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return fi, storage.ErrNotFound
+func (r *PostgresRepository) ResolveIdentity(ctx context.Context, provider Provider, claims IdentityClaims) (IdentityResolution, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return IdentityResolution{}, err
 	}
-	return fi, err
+	defer func() { _ = tx.Rollback(ctx) }()
+	result, err := resolveIdentity(ctx, tx, provider, claims)
+	if err != nil {
+		return IdentityResolution{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return IdentityResolution{}, err
+	}
+	return result, nil
 }
-func (r *PostgresRepository) LinkIdentity(ctx context.Context, fi FederatedIdentity) error {
-	_, err := r.pool.Exec(ctx, `INSERT INTO federated_identities(provider_id,external_subject,user_id,email) VALUES($1,$2,$3,$4) ON CONFLICT (provider_id,external_subject) DO NOTHING`, fi.ProviderID, fi.ExternalSubject, fi.UserID, fi.Email)
-	return err
+
+func resolveIdentity(ctx context.Context, tx pgx.Tx, provider Provider, claims IdentityClaims) (IdentityResolution, error) {
+	if strings.TrimSpace(claims.Subject) == "" {
+		return IdentityResolution{}, ErrBrokerFailed
+	}
+	lockKey := provider.ID.String() + "\n" + claims.Subject
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		return IdentityResolution{}, err
+	}
+	if u, err := findIdentityUser(ctx, tx, provider.ID, claims.Subject); err == nil {
+		return IdentityResolution{User: u}, nil
+	} else if !errors.Is(err, storage.ErrNotFound) {
+		return IdentityResolution{}, err
+	}
+	if !claims.EmailVerified || strings.TrimSpace(claims.Email) == "" {
+		return IdentityResolution{}, ErrVerifiedEmailRequired
+	}
+	return resolveAndLinkIdentity(ctx, tx, provider, claims)
+}
+
+func findIdentityUser(ctx context.Context, tx pgx.Tx, providerID uuid.UUID, subject string) (users.User, error) {
+	query := `SELECT u.` + strings.ReplaceAll(brokerUserCols, ",", ",u.") + ` FROM users u
+		JOIN federated_identities fi ON fi.user_id=u.id
+		WHERE fi.provider_id=$1 AND fi.external_subject=$2 FOR UPDATE OF u`
+	return scanResolvedUser(tx.QueryRow(ctx, query, providerID, subject))
+}
+
+func findUserByEmail(ctx context.Context, tx pgx.Tx, email string) (users.User, error) {
+	query := `SELECT u.` + strings.ReplaceAll(brokerUserCols, ",", ",u.") + ` FROM users u
+		WHERE lower(u.email)=lower($1) AND u.status <> 'deleted' ORDER BY u.created_at LIMIT 1 FOR UPDATE`
+	return scanResolvedUser(tx.QueryRow(ctx, query, email))
+}
+
+func resolveAndLinkIdentity(ctx context.Context, tx pgx.Tx, provider Provider, claims IdentityClaims) (IdentityResolution, error) {
+	u, err := findUserByEmail(ctx, tx, claims.Email)
+	created := false
+	if errors.Is(err, storage.ErrNotFound) {
+		u, created, err = provisionIdentityUser(ctx, tx, provider, claims)
+	}
+	if err != nil {
+		return IdentityResolution{}, err
+	}
+	if u.MFAEnabled {
+		return IdentityResolution{}, ErrLinkRequiresMFA
+	}
+	var linkedUserID uuid.UUID
+	err = tx.QueryRow(ctx, `INSERT INTO federated_identities(provider_id,external_subject,user_id,email)
+		VALUES($1,$2,$3,$4) ON CONFLICT (provider_id,external_subject) DO NOTHING RETURNING user_id`,
+		provider.ID, claims.Subject, u.ID, claims.Email).Scan(&linkedUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		winner, findErr := findIdentityUser(ctx, tx, provider.ID, claims.Subject)
+		return IdentityResolution{User: winner}, findErr
+	}
+	if err != nil {
+		return IdentityResolution{}, err
+	}
+	return IdentityResolution{User: u, UserCreated: created, IdentityCreated: true}, nil
+}
+
+func provisionIdentityUser(ctx context.Context, tx pgx.Tx, provider Provider, claims IdentityClaims) (users.User, bool, error) {
+	sum := sha256.Sum256([]byte(provider.ID.String() + "\n" + claims.Subject))
+	username := strings.TrimSpace(claims.Username)
+	if username == "" {
+		username = strings.SplitN(claims.Email, "@", 2)[0]
+	}
+	if username == "" {
+		username = "federated-" + hex.EncodeToString(sum[:4])
+	}
+	u, err := insertFederatedUser(ctx, tx, username, claims.Email)
+	if err == nil {
+		return u, true, nil
+	}
+	if !errors.Is(err, storage.ErrConflict) {
+		return users.User{}, false, err
+	}
+	if existing, findErr := findUserByEmail(ctx, tx, claims.Email); findErr == nil {
+		return existing, false, nil
+	}
+	u, err = insertFederatedUser(ctx, tx, username+"-"+hex.EncodeToString(sum[:4]), claims.Email)
+	if err == nil {
+		return u, true, nil
+	}
+	if existing, findErr := findUserByEmail(ctx, tx, claims.Email); findErr == nil {
+		return existing, false, nil
+	}
+	return users.User{}, false, err
+}
+
+func insertFederatedUser(ctx context.Context, tx pgx.Tx, username, email string) (users.User, error) {
+	query := `INSERT INTO users(username,email,status,source,email_verified)
+		VALUES($1,$2,'active','federated',true) ON CONFLICT DO NOTHING RETURNING ` + brokerUserCols
+	u, err := scanResolvedUser(tx.QueryRow(ctx, query, username, email))
+	if errors.Is(err, storage.ErrNotFound) {
+		return users.User{}, storage.ErrConflict
+	}
+	return u, err
 }

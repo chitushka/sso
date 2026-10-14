@@ -27,6 +27,7 @@ import (
 	"github.com/chitushka/sso/internal/app"
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
+	"github.com/chitushka/sso/internal/broker"
 	"github.com/chitushka/sso/internal/config"
 	"github.com/chitushka/sso/internal/oauth"
 	"github.com/chitushka/sso/internal/oidc"
@@ -225,6 +226,60 @@ func pendingActivationEndToEnd(t *testing.T) {
 	}
 }
 
+func concurrentBrokerResolution(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	repo := broker.NewPostgresRepository(pool, secrets.NewAESGCM("integration-test-enc-key-32chars-ok!"))
+	provider, err := repo.Create(ctx, broker.Provider{
+		Code: "concurrent-idp", Name: "Concurrent IdP", Type: "oidc", ClientID: "client",
+		ClientSecret: "secret", AuthorizeURL: "https://idp.example/authorize",
+		TokenURL: "https://idp.example/token", UserinfoURL: "https://idp.example/userinfo",
+		Scopes: "openid email", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := broker.IdentityClaims{Subject: "same-subject", Email: "concurrent-broker@example.org", EmailVerified: true, Username: "concurrent-broker"}
+	if _, err := repo.ResolveIdentity(ctx, provider, broker.IdentityClaims{Subject: "no-email"}); !errors.Is(err, broker.ErrVerifiedEmailRequired) {
+		t.Fatalf("JIT без подтверждённого email не отклонён: %v", err)
+	}
+	start := make(chan struct{})
+	results := make(chan broker.IdentityResolution, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			result, resolveErr := repo.ResolveIdentity(ctx, provider, claims)
+			results <- result
+			errs <- resolveErr
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if first.User.ID == uuid.Nil || first.User.ID != second.User.ID {
+		t.Fatalf("конкурентные callback выбрали разных пользователей: %s и %s", first.User.ID, second.User.ID)
+	}
+	var usersCount, identitiesCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE lower(email)=lower($1)`, claims.Email).Scan(&usersCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM federated_identities WHERE provider_id=$1 AND external_subject=$2`, provider.ID, claims.Subject).Scan(&identitiesCount); err != nil {
+		t.Fatal(err)
+	}
+	if usersCount != 1 || identitiesCount != 1 {
+		t.Fatalf("нарушена уникальность: users=%d identities=%d", usersCount, identitiesCount)
+	}
+}
+
 func TestEndToEnd(t *testing.T) {
 	// 1. Health and discovery.
 	if resp := doJSON(t, "GET", "/health/ready", "", nil, nil); resp.StatusCode != 200 {
@@ -260,6 +315,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("concurrent bootstrap statuses: %v", counts)
 	}
 	pendingActivationEndToEnd(t)
+	concurrentBrokerResolution(t)
 
 	// An LDAP identity may not attach itself to the existing local admin by
 	// presenting the same mutable username.

@@ -16,14 +16,13 @@ import (
 	"github.com/chitushka/sso/internal/audit"
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/netx"
-	"github.com/chitushka/sso/internal/storage"
-	"github.com/chitushka/sso/internal/users"
 	"github.com/google/uuid"
 )
 
 var (
-	ErrProviderDisabled = errors.New("identity provider is disabled")
-	ErrBrokerFailed     = errors.New("external authentication failed")
+	ErrProviderDisabled      = errors.New("identity provider is disabled")
+	ErrBrokerFailed          = errors.New("external authentication failed")
+	ErrVerifiedEmailRequired = errors.New("verified email is required for account provisioning")
 	// ErrLinkRequiresMFA is returned when a brokered login matches, by email, a
 	// local account that has MFA enabled. Auto-linking there would let the
 	// external IdP bypass the user's second factor, so linking must be manual.
@@ -32,7 +31,6 @@ var (
 
 type Service struct {
 	repo        Repository
-	users       users.Repository
 	auth        *auth.Service
 	audit       audit.Repository
 	issuer      string
@@ -40,9 +38,9 @@ type Service struct {
 	client      *http.Client
 }
 
-func NewService(repo Repository, usersRepo users.Repository, authSvc *auth.Service, aud audit.Repository, issuer string, stateSecret []byte) *Service {
+func NewService(repo Repository, authSvc *auth.Service, aud audit.Repository, issuer string, stateSecret []byte) *Service {
 	client := netx.NewSafeHTTPClient(10 * time.Second)
-	return &Service{repo: repo, users: usersRepo, auth: authSvc, audit: aud, issuer: issuer, stateSecret: stateSecret, client: client}
+	return &Service{repo: repo, auth: authSvc, audit: aud, issuer: issuer, stateSecret: stateSecret, client: client}
 }
 
 func (s *Service) List(ctx context.Context) ([]Provider, error) { return s.repo.List(ctx) }
@@ -184,10 +182,17 @@ func (s *Service) Callback(ctx context.Context, providerCode, rawState, code str
 		_ = s.audit.Write(ctx, audit.Event{Action: "broker_login_failed", TargetType: "identity_provider", TargetID: p.Code, IP: in.IP, UserAgent: in.UserAgent})
 		return auth.LoginResult{}, "", ErrBrokerFailed
 	}
-	u, err := s.resolveUser(ctx, p, info)
+	resolution, err := s.repo.ResolveIdentity(ctx, p, info)
 	if err != nil {
 		_ = s.audit.Write(ctx, audit.Event{Action: "broker_login_failed", TargetType: "identity_provider", TargetID: p.Code, IP: in.IP, UserAgent: in.UserAgent})
 		return auth.LoginResult{}, "", err
+	}
+	u := resolution.User
+	if resolution.UserCreated {
+		_ = s.audit.Write(ctx, audit.Event{ActorUserID: &u.ID, Action: "user_created", TargetType: "user", TargetID: u.ID.String()})
+	}
+	if resolution.IdentityCreated {
+		_ = s.audit.Write(ctx, audit.Event{ActorUserID: &u.ID, Action: "identity_linked", TargetType: "identity_provider", TargetID: p.Code})
 	}
 	res, err := s.auth.EstablishFederatedSession(ctx, u, in)
 	if err != nil {
@@ -197,14 +202,7 @@ func (s *Service) Callback(ctx context.Context, providerCode, rawState, code str
 	return res, st.Continue, nil
 }
 
-type externalIdentity struct {
-	Subject       string
-	Email         string
-	EmailVerified bool
-	Username      string
-}
-
-func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (externalIdentity, error) {
+func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (IdentityClaims, error) {
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
@@ -214,45 +212,45 @@ func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (e
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return externalIdentity{}, err
+		return IdentityClaims{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json") // GitHub answers form-encoded without it
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return externalIdentity{}, err
+		return IdentityClaims{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return externalIdentity{}, fmt.Errorf("token exchange failed: %s", resp.Status)
+		return IdentityClaims{}, fmt.Errorf("token exchange failed: %s", resp.Status)
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var tok struct {
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.Unmarshal(body, &tok); err != nil || tok.AccessToken == "" {
-		return externalIdentity{}, fmt.Errorf("token exchange failed: %s", resp.Status)
+		return IdentityClaims{}, fmt.Errorf("token exchange failed: %s", resp.Status)
 	}
 	ureq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.UserinfoURL, nil)
 	if err != nil {
-		return externalIdentity{}, err
+		return IdentityClaims{}, err
 	}
 	ureq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	ureq.Header.Set("Accept", "application/json")
 	uresp, err := s.client.Do(ureq)
 	if err != nil {
-		return externalIdentity{}, err
+		return IdentityClaims{}, err
 	}
 	defer func() { _ = uresp.Body.Close() }()
 	if uresp.StatusCode < 200 || uresp.StatusCode >= 300 {
-		return externalIdentity{}, fmt.Errorf("userinfo request failed: %s", uresp.Status)
+		return IdentityClaims{}, fmt.Errorf("userinfo request failed: %s", uresp.Status)
 	}
 	ubody, _ := io.ReadAll(io.LimitReader(uresp.Body, 1<<20))
 	var m map[string]any
 	if err := json.Unmarshal(ubody, &m); err != nil {
-		return externalIdentity{}, err
+		return IdentityClaims{}, err
 	}
-	id := externalIdentity{}
+	id := IdentityClaims{}
 	if v, ok := m["sub"].(string); ok {
 		id.Subject = v
 	} else if v, ok := m["id"]; ok { // GitHub returns a numeric id
@@ -272,65 +270,55 @@ func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (e
 			break
 		}
 	}
+	if p.Type == "github" {
+		email, err := s.fetchGitHubPrimaryEmail(ctx, tok.AccessToken)
+		if err != nil {
+			return IdentityClaims{}, err
+		}
+		id.Email = email
+		id.EmailVerified = true
+	}
 	if id.Subject == "" {
-		return externalIdentity{}, errors.New("userinfo has no subject")
+		return IdentityClaims{}, errors.New("userinfo has no subject")
 	}
 	return id, nil
 }
 
-func (s *Service) resolveUser(ctx context.Context, p Provider, info externalIdentity) (users.User, error) {
-	if fi, err := s.repo.FindIdentity(ctx, p.ID, info.Subject); err == nil {
-		return s.users.FindByID(ctx, fi.UserID)
+func (s *Service) fetchGitHubPrimaryEmail(ctx context.Context, accessToken string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user/emails", nil)
+	if err != nil {
+		return "", err
 	}
-	// Link to an existing account only when the IdP asserts a *verified* email.
-	// Without that, anyone able to set an arbitrary email at the provider could
-	// claim a local account. An unverified/absent email → provision a new one (JIT).
-	var u users.User
-	var err error
-	if info.Email != "" && info.EmailVerified {
-		u, err = s.users.FindByEmail(ctx, info.Email)
-	} else {
-		err = storage.ErrNotFound
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", err
 	}
-	switch {
-	case err == nil:
-		// Never auto-attach a federated login to an MFA-protected account: that
-		// would silently bypass the user's second factor.
-		if u.MFAEnabled {
-			return users.User{}, ErrLinkRequiresMFA
-		}
-	case errors.Is(err, storage.ErrNotFound):
-		if u, err = s.provisionUser(ctx, p, info); err != nil {
-			return users.User{}, err
-		}
-	default:
-		return users.User{}, err
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("github email request failed: %s", resp.Status)
 	}
-	if err := s.repo.LinkIdentity(ctx, FederatedIdentity{ProviderID: p.ID, ExternalSubject: info.Subject, UserID: u.ID, Email: info.Email}); err != nil {
-		return users.User{}, err
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
 	}
-	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &u.ID, Action: "identity_linked", TargetType: "identity_provider", TargetID: p.Code})
-	return u, nil
+	return primaryVerifiedGitHubEmail(body)
 }
 
-func (s *Service) provisionUser(ctx context.Context, p Provider, info externalIdentity) (users.User, error) {
-	username := info.Username
-	if username == "" {
-		if i := strings.Index(info.Email, "@"); i > 0 {
-			username = info.Email[:i]
-		} else {
-			username = p.Code + "-" + info.Subject
+func primaryVerifiedGitHubEmail(body []byte) (string, error) {
+	var emails []struct {
+		Email    string `json:"email"`
+		Primary  bool   `json:"primary"`
+		Verified bool   `json:"verified"`
+	}
+	if err := json.Unmarshal(body, &emails); err != nil {
+		return "", err
+	}
+	for _, email := range emails {
+		if email.Primary && email.Verified && strings.TrimSpace(email.Email) != "" {
+			return email.Email, nil
 		}
 	}
-	u, err := s.users.Create(ctx, users.User{Username: username, Email: info.Email, Status: users.StatusActive, Source: users.SourceFederated})
-	if errors.Is(err, storage.ErrConflict) {
-		// Username taken by someone else — retry once with a random suffix.
-		suffix := make([]byte, 3)
-		_, _ = rand.Read(suffix)
-		u, err = s.users.Create(ctx, users.User{Username: username + "-" + base64.RawURLEncoding.EncodeToString(suffix), Email: info.Email, Status: users.StatusActive, Source: users.SourceFederated})
-	}
-	if err == nil {
-		_ = s.audit.Write(ctx, audit.Event{ActorUserID: &u.ID, Action: "user_created", TargetType: "user", TargetID: u.ID.String()})
-	}
-	return u, err
+	return "", ErrVerifiedEmailRequired
 }
