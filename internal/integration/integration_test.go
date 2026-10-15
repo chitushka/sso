@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/binary"
 	"encoding/json"
@@ -33,6 +34,7 @@ import (
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/broker"
 	"github.com/chitushka/sso/internal/config"
+	"github.com/chitushka/sso/internal/middleware"
 	"github.com/chitushka/sso/internal/oauth"
 	"github.com/chitushka/sso/internal/oidc"
 	"github.com/chitushka/sso/internal/secrets"
@@ -349,6 +351,36 @@ func transactionalSecurityAudit(t *testing.T) {
 	}
 }
 
+func sharedRateLimiterEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `TRUNCATE rate_limit_buckets`); err != nil {
+		t.Fatal(err)
+	}
+	first := middleware.NewPostgresTokenBucketLimiter(pool, 1, 2)
+	second := middleware.NewPostgresTokenBucketLimiter(pool, 1, 2)
+	for i, test := range []struct {
+		limiter *middleware.PostgresTokenBucketLimiter
+		want    bool
+	}{{first, true}, {second, true}, {first, false}} {
+		got, err := test.limiter.Allow(ctx, "203.0.113.10 /oauth2/token")
+		if err != nil || got != test.want {
+			t.Fatalf("общий limiter, запрос %d: allowed=%v want=%v err=%v", i+1, got, test.want, err)
+		}
+	}
+	var rows, hashLength int
+	if err := pool.QueryRow(ctx, `SELECT count(*),min(octet_length(key_hash)) FROM rate_limit_buckets`).Scan(&rows, &hashLength); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || hashLength != sha256.Size {
+		t.Fatalf("неверное состояние общего limiter: rows=%d hash_length=%d", rows, hashLength)
+	}
+}
+
 func TestEndToEnd(t *testing.T) {
 	// 1. Health and discovery.
 	if resp := doJSON(t, "GET", "/health/ready", "", nil, nil); resp.StatusCode != 200 {
@@ -386,6 +418,7 @@ func TestEndToEnd(t *testing.T) {
 	pendingActivationEndToEnd(t)
 	concurrentBrokerResolution(t)
 	transactionalSecurityAudit(t)
+	sharedRateLimiterEndToEnd(t)
 
 	// An LDAP identity may not attach itself to the existing local admin by
 	// presenting the same mutable username.

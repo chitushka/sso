@@ -85,7 +85,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	oauthSvc := oauth.NewService(oauthRepo, userRepo, sessionRepo, tokens, auditRepo, passwords).WithTokenVerifier(tokens).WithRefreshTTL(cfg.Token.RefreshTTL)
 	accountSvc.WithTokenCache(accessCache)
 	oauthSvc.WithIDTokenIssuer(oidcSvc).WithIDTokenVerifier(oidcSvc).WithBackchannel(oidcSvc)
-	metrics := middleware.NewMetrics()
+	localRateLimiter := middleware.NewTokenBucketLimiter(30, 10)
+	sharedRateLimiter := middleware.NewPostgresTokenBucketLimiter(pool, 30, 10)
+	metrics := middleware.NewMetrics().WithRateLimiter(localRateLimiter)
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP(cfg.HTTPSecurity.TrustedProxies))
@@ -95,7 +97,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	r.Use(middleware.Logger(logger))
 	r.Use(cors.Handler(cors.Options{AllowedOrigins: cfg.CORS.AllowedOrigins, AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}, AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"}, AllowCredentials: true, MaxAge: 300}))
 	r.Use(middleware.BodyLimit(1 << 20)) // 1 MiB cap on request bodies
-	r.Use(middleware.RateLimit(middleware.NewTokenBucketLimiter(30, 10),
+	r.Use(middleware.RateLimit(middleware.NewLayeredRateLimiter(localRateLimiter, sharedRateLimiter),
 		"/api/v1/auth/login",
 		"/api/v1/auth/mfa/verify",
 		"/api/v1/auth/password/forgot",

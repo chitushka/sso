@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"container/list"
+	"context"
 	"net"
 	"net/http"
 	"sync"
@@ -9,61 +11,131 @@ import (
 	"github.com/chitushka/sso/internal/httpx"
 )
 
-// RateLimiter decides whether a request identified by key may proceed.
-// The in-memory implementation can be swapped for Redis later.
+const defaultMaxRateLimitBuckets = 10_000
+
+// RateLimiter определяет, можно ли выполнить запрос с указанным ключом.
 type RateLimiter interface {
-	Allow(key string) bool
+	Allow(ctx context.Context, key string) (bool, error)
 }
 
 type bucket struct {
+	key      string
 	tokens   float64
 	lastSeen time.Time
+	element  *list.Element
 }
 
-// TokenBucketLimiter refills rate tokens per second up to burst, per key.
+type RateLimitStats struct {
+	Buckets           int
+	TTLEvictions      uint64
+	CapacityEvictions uint64
+}
+
+// TokenBucketLimiter пополняет rate токенов в секунду до burst для каждого
+// ключа. LRU-список обеспечивает амортизированное O(1)-вытеснение и жёсткий
+// предел памяти даже при потоке уникальных IP-адресов.
 type TokenBucketLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	rate    float64
-	burst   float64
+	mu                sync.Mutex
+	buckets           map[string]*bucket
+	lru               *list.List
+	rate              float64
+	burst             float64
+	ttl               time.Duration
+	maxBuckets        int
+	now               func() time.Time
+	ttlEvictions      uint64
+	capacityEvictions uint64
 }
 
 func NewTokenBucketLimiter(ratePerMinute, burst int) *TokenBucketLimiter {
-	return &TokenBucketLimiter{buckets: map[string]*bucket{}, rate: float64(ratePerMinute) / 60.0, burst: float64(burst)}
+	return newTokenBucketLimiter(ratePerMinute, burst, defaultMaxRateLimitBuckets, time.Now)
 }
-func (l *TokenBucketLimiter) Allow(key string) bool {
+
+func newTokenBucketLimiter(ratePerMinute, burst, maxBuckets int, now func() time.Time) *TokenBucketLimiter {
+	if ratePerMinute <= 0 || burst <= 0 || maxBuckets <= 0 {
+		panic("параметры rate limiter должны быть положительными")
+	}
+	rate := float64(ratePerMinute) / 60
+	return &TokenBucketLimiter{
+		buckets:    make(map[string]*bucket, maxBuckets),
+		lru:        list.New(),
+		rate:       rate,
+		burst:      float64(burst),
+		ttl:        time.Duration(float64(time.Second) * float64(burst) / rate),
+		maxBuckets: maxBuckets,
+		now:        now,
+	}
+}
+
+func (l *TokenBucketLimiter) Allow(_ context.Context, key string) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := time.Now()
+	now := l.now()
 	b, ok := l.buckets[key]
 	if !ok {
-		l.buckets[key] = &bucket{tokens: l.burst - 1, lastSeen: now}
-		l.evictStale(now)
-		return true
+		l.evictExpired(now)
+		if len(l.buckets) >= l.maxBuckets {
+			l.remove(l.lru.Back())
+			l.capacityEvictions++
+		}
+		b = &bucket{key: key, tokens: l.burst - 1, lastSeen: now}
+		b.element = l.lru.PushFront(b)
+		l.buckets[key] = b
+		return true, nil
 	}
 	b.tokens += now.Sub(b.lastSeen).Seconds() * l.rate
 	if b.tokens > l.burst {
 		b.tokens = l.burst
 	}
 	b.lastSeen = now
+	l.lru.MoveToFront(b.element)
 	if b.tokens < 1 {
-		return false
+		return false, nil
 	}
 	b.tokens--
-	return true
+	return true, nil
 }
 
-// evictStale drops buckets idle long enough to be fully refilled anyway.
-func (l *TokenBucketLimiter) evictStale(now time.Time) {
-	if len(l.buckets) < 10000 {
+func (l *TokenBucketLimiter) evictExpired(now time.Time) {
+	for element := l.lru.Back(); element != nil; element = l.lru.Back() {
+		b := element.Value.(*bucket)
+		if now.Sub(b.lastSeen) < l.ttl {
+			return
+		}
+		l.remove(element)
+		l.ttlEvictions++
+	}
+}
+
+func (l *TokenBucketLimiter) remove(element *list.Element) {
+	if element == nil {
 		return
 	}
-	idle := time.Duration(l.burst/l.rate) * time.Second
-	for k, b := range l.buckets {
-		if now.Sub(b.lastSeen) > idle {
-			delete(l.buckets, k)
+	b := element.Value.(*bucket)
+	delete(l.buckets, b.key)
+	l.lru.Remove(element)
+}
+
+func (l *TokenBucketLimiter) Stats() RateLimitStats {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return RateLimitStats{Buckets: len(l.buckets), TTLEvictions: l.ttlEvictions, CapacityEvictions: l.capacityEvictions}
+}
+
+type LayeredRateLimiter struct{ limiters []RateLimiter }
+
+func NewLayeredRateLimiter(limiters ...RateLimiter) *LayeredRateLimiter {
+	return &LayeredRateLimiter{limiters: limiters}
+}
+
+func (l *LayeredRateLimiter) Allow(ctx context.Context, key string) (bool, error) {
+	for _, limiter := range l.limiters {
+		allowed, err := limiter.Allow(ctx, key)
+		if err != nil || !allowed {
+			return allowed, err
 		}
 	}
+	return true, nil
 }
 
 // RateLimit applies the limiter to the given exact request paths, keyed by client IP + path.
@@ -78,7 +150,13 @@ func RateLimit(limiter RateLimiter, paths ...string) func(http.Handler) http.Han
 				next.ServeHTTP(w, r)
 				return
 			}
-			if !limiter.Allow(clientIP(r) + " " + r.URL.Path) {
+			allowed, err := limiter.Allow(r.Context(), clientIP(r)+" "+r.URL.Path)
+			if err != nil {
+				w.Header().Set("Retry-After", "60")
+				httpx.Error(w, http.StatusServiceUnavailable, "rate limiter unavailable")
+				return
+			}
+			if !allowed {
 				w.Header().Set("Retry-After", "60")
 				httpx.Error(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return

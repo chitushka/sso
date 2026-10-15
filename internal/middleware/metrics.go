@@ -19,9 +19,15 @@ type Metrics struct {
 	inflight    int64
 	totalMicros int64
 	totalCount  int64
+	rateLimiter *TokenBucketLimiter
 }
 
 func NewMetrics() *Metrics { return &Metrics{} }
+
+func (m *Metrics) WithRateLimiter(limiter *TokenBucketLimiter) *Metrics {
+	m.rateLimiter = limiter
+	return m
+}
 
 func (m *Metrics) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +59,13 @@ func (m *Metrics) Expose(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(&b, "# TYPE sso_http_inflight gauge\nsso_http_inflight %d\n", atomic.LoadInt64(&m.inflight))
 	fmt.Fprintf(&b, "# TYPE sso_http_request_duration_seconds_sum counter\nsso_http_request_duration_seconds_sum %f\n", float64(atomic.LoadInt64(&m.totalMicros))/1e6)
 	fmt.Fprintf(&b, "# TYPE sso_http_requests_processed_total counter\nsso_http_requests_processed_total %d\n", atomic.LoadInt64(&m.totalCount))
+	if m.rateLimiter != nil {
+		stats := m.rateLimiter.Stats()
+		fmt.Fprintf(&b, "# TYPE sso_rate_limit_local_buckets gauge\nsso_rate_limit_local_buckets %d\n", stats.Buckets)
+		b.WriteString("# TYPE sso_rate_limit_local_evictions_total counter\n")
+		fmt.Fprintf(&b, "sso_rate_limit_local_evictions_total{reason=%q} %d\n", "ttl", stats.TTLEvictions)
+		fmt.Fprintf(&b, "sso_rate_limit_local_evictions_total{reason=%q} %d\n", "capacity", stats.CapacityEvictions)
+	}
 	_, _ = w.Write([]byte(b.String()))
 }
 
