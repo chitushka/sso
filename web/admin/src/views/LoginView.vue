@@ -3,8 +3,10 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import api, { apiError } from '../api'
+import { useI18n } from 'vue-i18n'
 
 const auth = useAuthStore()
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 
@@ -12,19 +14,19 @@ const username = ref('')
 const password = ref('')
 const error = ref('')
 const busy = ref(false)
-const mfaToken = ref('') // non-empty → second factor step
+const mfaToken = ref('') // Непустое значение включает шаг второго фактора.
 const code = ref('')
 const providers = ref([])
 
 if (route.query.broker_error) {
-  error.value = 'External sign-in failed, try again or use your password'
+  error.value = t('login.externalFailed')
 }
 onMounted(async () => {
   try {
     const { data } = await api.get('/api/v1/broker/providers')
     providers.value = data
   } catch {
-    /* password-only login still works */
+    /* Вход по паролю остаётся доступен. */
   }
 })
 
@@ -36,8 +38,8 @@ function finish(data) {
   auth.user = data.user
   auth.restored = true
   const target = String(route.query.continue || '/')
-  // External OAuth authorize URLs need a full navigation so the session
-  // cookie reaches the backend.
+  // Для внешнего OAuth authorize нужен полный переход, чтобы cookie сессии
+  // попал на backend.
   if (target.startsWith('/oauth2/')) {
     window.location.href = target
   } else {
@@ -56,7 +58,7 @@ async function submit() {
       finish(data)
     }
   } catch (e) {
-    error.value = e.response?.status === 429 ? 'Too many failed attempts, try again later' : apiError(e)
+    error.value = e.response?.status === 429 ? t('login.tooMany') : apiError(e)
   } finally {
     busy.value = false
   }
@@ -70,13 +72,13 @@ async function submitCode() {
     finish(data)
   } catch (e) {
     if (e.response?.status === 429) {
-      error.value = 'Too many failed attempts, try again later'
+      error.value = t('login.tooMany')
     } else if (e.response?.status === 401 && apiError(e).includes('mfa token')) {
-      error.value = 'Session expired, sign in again'
+      error.value = t('login.expired')
       mfaToken.value = ''
       code.value = ''
     } else {
-      error.value = 'Invalid code'
+      error.value = t('login.invalidCode')
     }
   } finally {
     busy.value = false
@@ -89,37 +91,37 @@ async function submitCode() {
     <div class="col-md-4">
       <div class="card shadow-sm">
         <div class="card-body">
-          <h4 class="card-title mb-3 text-center">SSO Sign in</h4>
+          <h4 class="card-title mb-3 text-center">{{ $t('login.title') }}</h4>
           <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
 
           <form v-if="!mfaToken" @submit.prevent="submit">
             <div class="mb-3">
-              <label class="form-label">Username</label>
+              <label class="form-label">{{ $t('common.username') }}</label>
               <input v-model="username" class="form-control" autocomplete="username" required autofocus />
             </div>
             <div class="mb-3">
-              <label class="form-label">Password</label>
+              <label class="form-label">{{ $t('common.password') }}</label>
               <input v-model="password" type="password" class="form-control" autocomplete="current-password" required />
             </div>
-            <button class="btn btn-primary w-100" :disabled="busy">{{ busy ? 'Signing in…' : 'Sign in' }}</button>
+            <button class="btn btn-primary w-100" :disabled="busy">{{ busy ? $t('login.signingIn') : $t('login.signIn') }}</button>
             <div class="text-center mt-3">
-              <router-link to="/forgot-password" class="small">Forgot password?</router-link>
+              <router-link to="/forgot-password" class="small">{{ $t('login.forgot') }}</router-link>
             </div>
             <template v-if="providers.length">
               <hr />
               <a v-for="p in providers" :key="p.code" class="btn btn-outline-secondary w-100 mb-2" :href="brokerURL(p)">
-                Continue with {{ p.name }}
+                {{ $t('login.continueWith', { provider: p.name }) }}
               </a>
             </template>
           </form>
 
           <form v-else @submit.prevent="submitCode">
-            <p class="text-muted small">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
+            <p class="text-muted small">{{ $t('login.mfaHelp') }}</p>
             <div class="mb-3">
               <input v-model="code" class="form-control text-center" placeholder="123456" autocomplete="one-time-code" required autofocus />
             </div>
-            <button class="btn btn-primary w-100" :disabled="busy">Verify</button>
-            <button type="button" class="btn btn-link w-100 mt-1" @click="mfaToken = ''; code = ''">Back</button>
+            <button class="btn btn-primary w-100" :disabled="busy">{{ $t('login.verify') }}</button>
+            <button type="button" class="btn btn-link w-100 mt-1" @click="mfaToken = ''; code = ''">{{ $t('login.back') }}</button>
           </form>
         </div>
       </div>

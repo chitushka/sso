@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router'
 import api from '../api'
 
 const route = useRoute()
-const state = ref('working') // working | ok | failed
+const state = ref('working') // working | ok | failed — технические состояния.
 
 onMounted(async () => {
   try {
@@ -21,11 +21,11 @@ onMounted(async () => {
     <div class="col-md-4 text-center">
       <div class="card shadow-sm">
         <div class="card-body">
-          <h4 class="card-title mb-3">Email verification</h4>
-          <p v-if="state === 'working'" class="text-muted">Verifying…</p>
-          <div v-else-if="state === 'ok'" class="alert alert-success">Email verified. You can close this page.</div>
-          <div v-else class="alert alert-danger">The link is invalid or expired.</div>
-          <router-link to="/login" class="small">Go to sign in</router-link>
+          <h4 class="card-title mb-3">{{ $t('verifyEmail.title') }}</h4>
+          <p v-if="state === 'working'" class="text-muted">{{ $t('verifyEmail.working') }}</p>
+          <div v-else-if="state === 'ok'" class="alert alert-success">{{ $t('verifyEmail.ok') }}</div>
+          <div v-else class="alert alert-danger">{{ $t('verifyEmail.failed') }}</div>
+          <router-link to="/login" class="small">{{ $t('verifyEmail.login') }}</router-link>
         </div>
       </div>
     </div>

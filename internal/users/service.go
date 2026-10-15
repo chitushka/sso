@@ -185,13 +185,3 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID, ip, ua string) error
 	}
 	return audit.Write(ctx, s.audit, audit.Event{Action: "user_deleted", TargetType: "user", TargetID: id.String(), IP: ip, UserAgent: ua})
 }
-func (s *Service) SetPassword(ctx context.Context, id uuid.UUID, password string) error {
-	if err := ValidatePassword(password); err != nil {
-		return err
-	}
-	h, err := s.passwords.Hash(password)
-	if err != nil {
-		return err
-	}
-	return s.repo.SetPasswordHash(ctx, id, h)
-}

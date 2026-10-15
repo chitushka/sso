@@ -11,7 +11,7 @@ async function submit() {
   try {
     await api.post('/api/v1/auth/password/forgot', { login: login.value })
   } finally {
-    sent.value = true // always: the endpoint never reveals whether the account exists
+    sent.value = true // Endpoint никогда не раскрывает наличие учётной записи.
     busy.value = false
   }
 }
@@ -22,19 +22,19 @@ async function submit() {
     <div class="col-md-4">
       <div class="card shadow-sm">
         <div class="card-body">
-          <h4 class="card-title mb-3 text-center">Reset password</h4>
+          <h4 class="card-title mb-3 text-center">{{ $t('password.resetTitle') }}</h4>
           <div v-if="sent" class="alert alert-success">
-            If the account exists, a reset link has been sent to its email address.
+            {{ $t('password.resetSent') }}
           </div>
           <form v-else @submit.prevent="submit">
             <div class="mb-3">
-              <label class="form-label">Username or email</label>
+              <label class="form-label">{{ $t('password.loginLabel') }}</label>
               <input v-model="login" class="form-control" required autofocus />
             </div>
-            <button class="btn btn-primary w-100" :disabled="busy">Send reset link</button>
+            <button class="btn btn-primary w-100" :disabled="busy">{{ $t('password.sendLink') }}</button>
           </form>
           <div class="text-center mt-3">
-            <router-link to="/login" class="small">Back to sign in</router-link>
+            <router-link to="/login" class="small">{{ $t('password.backToLogin') }}</router-link>
           </div>
         </div>
       </div>

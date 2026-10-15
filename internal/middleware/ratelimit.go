@@ -3,7 +3,6 @@ package middleware
 import (
 	"container/list"
 	"context"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -138,7 +137,7 @@ func (l *LayeredRateLimiter) Allow(ctx context.Context, key string) (bool, error
 	return true, nil
 }
 
-// RateLimit applies the limiter to the given exact request paths, keyed by client IP + path.
+// RateLimit применяет ограничитель к точным путям запросов с ключом IP клиента + путь.
 func RateLimit(limiter RateLimiter, paths ...string) func(http.Handler) http.Handler {
 	limited := map[string]bool{}
 	for _, p := range paths {
@@ -150,7 +149,7 @@ func RateLimit(limiter RateLimiter, paths ...string) func(http.Handler) http.Han
 				next.ServeHTTP(w, r)
 				return
 			}
-			allowed, err := limiter.Allow(r.Context(), clientIP(r)+" "+r.URL.Path)
+			allowed, err := limiter.Allow(r.Context(), httpx.ClientIP(r)+" "+r.URL.Path)
 			if err != nil {
 				w.Header().Set("Retry-After", "60")
 				httpx.Error(w, http.StatusServiceUnavailable, "rate limiter unavailable")
@@ -164,13 +163,4 @@ func RateLimit(limiter RateLimiter, paths ...string) func(http.Handler) http.Han
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// clientIP reads the peer address. RealIP has already resolved X-Forwarded-For
-// into RemoteAddr and stripped the header, so RemoteAddr is authoritative here.
-func clientIP(r *http.Request) string {
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }

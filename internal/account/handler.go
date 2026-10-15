@@ -2,7 +2,6 @@ package account
 
 import (
 	"errors"
-	"net"
 	"net/http"
 	"strings"
 
@@ -22,8 +21,8 @@ func RegisterRoutes(r chi.Router, svc *Service, authSvc *auth.Service, bearerAut
 				httpx.Error(w, 400, "login is required")
 				return
 			}
-			svc.ForgotPassword(req.Context(), body.Login, clientIP(req), req.UserAgent())
-			// Always 200: whether the account exists must not be observable.
+			svc.ForgotPassword(req.Context(), body.Login, httpx.ClientIP(req), req.UserAgent())
+			// Всегда 200: наличие учётной записи не должно быть наблюдаемым.
 			httpx.JSON(w, 200, map[string]string{"status": "ok"})
 		})
 		r.With(bearerAuth).Post("/change", func(w http.ResponseWriter, req *http.Request) {
@@ -54,7 +53,7 @@ func RegisterRoutes(r chi.Router, svc *Service, authSvc *auth.Service, bearerAut
 				httpx.Error(w, 400, "invalid json body")
 				return
 			}
-			if err := svc.ResetPassword(req.Context(), body.Token, body.Password, clientIP(req), req.UserAgent()); err != nil {
+			if err := svc.ResetPassword(req.Context(), body.Token, body.Password, httpx.ClientIP(req), req.UserAgent()); err != nil {
 				if errors.Is(err, ErrInvalidToken) {
 					httpx.Error(w, 400, "invalid or expired token")
 					return
@@ -183,7 +182,7 @@ func RegisterRoutes(r chi.Router, svc *Service, authSvc *auth.Service, bearerAut
 				httpx.Error(w, 400, "invalid json body")
 				return
 			}
-			res, err := authSvc.CompleteMFALogin(req.Context(), body.MFAToken, body.Code, auth.LoginInput{IP: clientIP(req), UserAgent: req.UserAgent()})
+			res, err := authSvc.CompleteMFALogin(req.Context(), body.MFAToken, body.Code, auth.LoginInput{IP: httpx.ClientIP(req), UserAgent: req.UserAgent()})
 			if err != nil {
 				switch {
 				case errors.Is(err, auth.ErrLoginLocked):
@@ -216,13 +215,4 @@ func currentUser(w http.ResponseWriter, req *http.Request) (uuid.UUID, bool) {
 		return uuid.Nil, false
 	}
 	return id, true
-}
-
-// clientIP returns the peer address; RealIP has already folded any trusted
-// X-Forwarded-For into RemoteAddr and removed the header.
-func clientIP(r *http.Request) string {
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }

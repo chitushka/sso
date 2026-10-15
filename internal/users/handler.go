@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 	"net/http"
 	"strconv"
-	"strings"
 )
 
 func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler, require func(string, string) func(http.Handler) http.Handler) {
@@ -30,7 +29,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 				httpx.Error(w, 400, "invalid json body")
 				return
 			}
-			u, err := svc.Create(r.Context(), req, clientIP(r), r.UserAgent())
+			u, err := svc.Create(r.Context(), req, httpx.ClientIP(r), r.UserAgent())
 			if err != nil {
 				if errors.Is(err, storage.ErrConflict) {
 					httpx.Error(w, 409, "user already exists")
@@ -60,7 +59,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 				httpx.Error(w, 400, "invalid id")
 				return
 			}
-			if err := svc.Delete(r.Context(), id, clientIP(r), r.UserAgent()); err != nil {
+			if err := svc.Delete(r.Context(), id, httpx.ClientIP(r), r.UserAgent()); err != nil {
 				if errors.Is(err, storage.ErrNotFound) {
 					httpx.Error(w, 404, "user not found")
 					return
@@ -93,10 +92,4 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			httpx.JSON(w, 200, u)
 		})
 	})
-}
-func clientIP(r *http.Request) string {
-	if x := r.Header.Get("X-Forwarded-For"); x != "" {
-		return strings.TrimSpace(strings.Split(x, ",")[0])
-	}
-	return r.RemoteAddr
 }

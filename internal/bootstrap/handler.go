@@ -5,7 +5,6 @@ import (
 	"github.com/chitushka/sso/internal/httpx"
 	"github.com/go-chi/chi/v5"
 	"net/http"
-	"strings"
 )
 
 func RegisterRoutes(r chi.Router, svc *Service) {
@@ -24,7 +23,7 @@ func RegisterRoutes(r chi.Router, svc *Service) {
 				httpx.Error(w, 400, "invalid json body")
 				return
 			}
-			u, err := svc.CreateAdmin(r.Context(), req, clientIP(r), r.UserAgent())
+			u, err := svc.CreateAdmin(r.Context(), req, httpx.ClientIP(r), r.UserAgent())
 			if err != nil {
 				if errors.Is(err, ErrAlreadyInitialized) {
 					httpx.Error(w, 409, "system already initialized")
@@ -36,10 +35,4 @@ func RegisterRoutes(r chi.Router, svc *Service) {
 			httpx.JSON(w, 201, u)
 		})
 	})
-}
-func clientIP(r *http.Request) string {
-	if x := r.Header.Get("X-Forwarded-For"); x != "" {
-		return strings.TrimSpace(strings.Split(x, ",")[0])
-	}
-	return r.RemoteAddr
 }

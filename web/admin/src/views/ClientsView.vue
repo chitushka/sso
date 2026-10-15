@@ -1,8 +1,10 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import api, { apiError } from '../api'
+import { useI18n } from 'vue-i18n'
 
 const clients = ref([])
+const { t } = useI18n()
 const error = ref('')
 const newSecret = ref(null) // {client_id, secret} shown once after create
 const formOpen = ref(false)
@@ -86,7 +88,7 @@ async function save() {
 }
 
 async function remove(c) {
-  if (!confirm(`Delete client "${c.client_id}"?`)) return
+  if (!confirm(t('clients.confirmDelete', { client: c.client_id }))) return
   error.value = ''
   try {
     await api.delete(`/api/v1/oauth/clients/${c.id}`)
@@ -99,13 +101,13 @@ async function remove(c) {
 
 <template>
   <div class="d-flex justify-content-between align-items-center mb-3">
-    <h3 class="mb-0">OAuth Clients</h3>
-    <button class="btn btn-primary btn-sm" @click="openCreate">New client</button>
+    <h3 class="mb-0">{{ $t('clients.title') }}</h3>
+    <button class="btn btn-primary btn-sm" @click="openCreate">{{ $t('clients.create') }}</button>
   </div>
   <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
 
   <div v-if="newSecret" class="alert alert-warning">
-    Secret for <strong>{{ newSecret.client_id }}</strong> (shown only once):
+    {{ $t('clients.secretOnce', { client: newSecret.client_id }) }}
     <code class="user-select-all">{{ newSecret.secret }}</code>
     <button class="btn-close float-end" @click="newSecret = null"></button>
   </div>
@@ -117,50 +119,50 @@ async function remove(c) {
         <input v-model="form.client_id" class="form-control" :disabled="!!editingId" required />
       </div>
       <div class="col-md-3">
-        <label class="form-label small">Name</label>
+        <label class="form-label small">{{ $t('common.name') }}</label>
         <input v-model="form.name" class="form-control" required />
       </div>
       <div class="col-md-2">
-        <label class="form-label small">Type</label>
+        <label class="form-label small">{{ $t('common.type') }}</label>
         <select v-model="form.type" class="form-select" :disabled="!!editingId">
           <option>confidential</option>
           <option>public</option>
         </select>
       </div>
       <div class="col-md-4">
-        <label class="form-label small">Allowed scopes (space separated)</label>
+        <label class="form-label small">{{ $t('clients.scopes') }}</label>
         <input v-model="form.allowed_scopes" class="form-control" />
       </div>
       <div class="col-md-6">
-        <label class="form-label small">Redirect URIs (space/comma separated)</label>
+        <label class="form-label small">{{ $t('clients.redirectUris') }}</label>
         <input v-model="form.redirect_uris" class="form-control" />
       </div>
       <div class="col-md-6">
-        <label class="form-label small">Post-logout redirect URIs</label>
+        <label class="form-label small">{{ $t('clients.postLogoutUris') }}</label>
         <input v-model="form.post_logout_redirect_uris" class="form-control" />
       </div>
       <div class="col-md-6">
-        <label class="form-label small">Back-channel logout URI</label>
+        <label class="form-label small">{{ $t('clients.backchannelUri') }}</label>
         <input v-model="form.backchannel_logout_uri" class="form-control" />
       </div>
       <div class="col-md-6 d-flex align-items-end gap-4">
         <div class="form-check">
           <input v-model="form.skip_consent" class="form-check-input" type="checkbox" id="skipConsent" />
-          <label class="form-check-label" for="skipConsent">Skip consent</label>
+          <label class="form-check-label" for="skipConsent">{{ $t('clients.skipConsent') }}</label>
         </div>
         <div class="form-check">
           <input v-model="form.enabled" class="form-check-input" type="checkbox" id="enabled" />
-          <label class="form-check-label" for="enabled">Enabled</label>
+          <label class="form-check-label" for="enabled">{{ $t('common.enabled') }}</label>
         </div>
-        <button class="btn btn-success ms-auto">Save</button>
-        <button type="button" class="btn btn-outline-secondary" @click="formOpen = false">Cancel</button>
+        <button class="btn btn-success ms-auto">{{ $t('common.save') }}</button>
+        <button type="button" class="btn btn-outline-secondary" @click="formOpen = false">{{ $t('common.cancel') }}</button>
       </div>
     </div>
   </form>
 
   <table class="table table-hover align-middle">
     <thead>
-      <tr><th>client_id</th><th>Name</th><th>Type</th><th>Scopes</th><th>Consent</th><th>Enabled</th><th class="text-end">Actions</th></tr>
+      <tr><th>client_id</th><th>{{ $t('common.name') }}</th><th>{{ $t('common.type') }}</th><th>Scopes</th><th>{{ $t('clients.consent') }}</th><th>{{ $t('common.enabled') }}</th><th class="text-end">{{ $t('common.actions') }}</th></tr>
     </thead>
     <tbody>
       <tr v-for="c in clients" :key="c.id">
@@ -168,11 +170,11 @@ async function remove(c) {
         <td>{{ c.name }}</td>
         <td>{{ c.type }}</td>
         <td class="small text-muted">{{ joinList(c.allowed_scopes) }}</td>
-        <td><span class="badge bg-light text-dark">{{ c.skip_consent ? 'skipped' : 'required' }}</span></td>
-        <td><span class="badge" :class="c.enabled ? 'bg-success' : 'bg-secondary'">{{ c.enabled ? 'yes' : 'no' }}</span></td>
+        <td><span class="badge bg-light text-dark">{{ c.skip_consent ? $t('clients.skipped') : $t('clients.required') }}</span></td>
+        <td><span class="badge" :class="c.enabled ? 'bg-success' : 'bg-secondary'">{{ c.enabled ? $t('common.yes') : $t('common.no') }}</span></td>
         <td class="text-end">
-          <button class="btn btn-outline-secondary btn-sm me-1" @click="openEdit(c)">Edit</button>
-          <button class="btn btn-outline-danger btn-sm" @click="remove(c)">Delete</button>
+          <button class="btn btn-outline-secondary btn-sm me-1" @click="openEdit(c)">{{ $t('common.edit') }}</button>
+          <button class="btn btn-outline-danger btn-sm" @click="remove(c)">{{ $t('common.delete') }}</button>
         </td>
       </tr>
     </tbody>

@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import api, { apiError } from '../api'
 
-// Opened by the client app after /oauth2/authorize returned consent_required:
+// Клиент открывает страницу после ответа consent_required от /oauth2/authorize:
 // /consent?client_id=...&scope=...&continue=<original authorize URL>
 const route = useRoute()
 const info = ref(null)
@@ -53,21 +53,21 @@ function deny() {
     <div class="col-md-5">
       <div class="card shadow-sm">
         <div class="card-body">
-          <h4 class="card-title mb-3">Authorize application</h4>
+          <h4 class="card-title mb-3">{{ $t('consent.title') }}</h4>
           <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
           <template v-if="info">
             <p>
-              <strong>{{ info.client_name || info.client_id }}</strong> requests access to:
+              {{ $t('consent.requests', { client: info.client_name || info.client_id }) }}
             </p>
             <ul>
               <li v-for="s in info.requested_scopes" :key="s">
                 <code>{{ s }}</code>
-                <span v-if="info.granted_scopes.includes(s)" class="badge bg-secondary ms-2">already granted</span>
+                <span v-if="info.granted_scopes.includes(s)" class="badge bg-secondary ms-2">{{ $t('consent.granted') }}</span>
               </li>
             </ul>
             <div class="d-flex gap-2">
-              <button class="btn btn-primary" :disabled="busy" @click="approve">Allow</button>
-              <button class="btn btn-outline-secondary" :disabled="busy" @click="deny">Deny</button>
+              <button class="btn btn-primary" :disabled="busy" @click="approve">{{ $t('consent.allow') }}</button>
+              <button class="btn btn-outline-secondary" :disabled="busy" @click="deny">{{ $t('consent.deny') }}</button>
             </div>
           </template>
         </div>

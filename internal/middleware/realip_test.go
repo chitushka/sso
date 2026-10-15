@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"github.com/chitushka/sso/internal/httpx"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,7 +11,7 @@ func resolvedIP(t *testing.T, trusted []string, remoteAddr, xff string) string {
 	t.Helper()
 	var got string
 	h := RealIP(trusted)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		got = clientIP(r)
+		got = httpx.ClientIP(r)
 	}))
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = remoteAddr
@@ -22,7 +23,7 @@ func resolvedIP(t *testing.T, trusted []string, remoteAddr, xff string) string {
 }
 
 func TestRealIPIgnoresSpoofedXFFFromUntrustedPeer(t *testing.T) {
-	// Direct client (not a trusted proxy) tries to spoof its IP.
+	// Прямой клиент не является доверенным proxy и пытается подменить IP.
 	if ip := resolvedIP(t, []string{"10.0.0.0/8"}, "203.0.113.9:5555", "1.2.3.4"); ip != "203.0.113.9" {
 		t.Fatalf("spoofed XFF must be ignored, got %s", ip)
 	}
@@ -35,7 +36,7 @@ func TestRealIPHonorsXFFFromTrustedProxy(t *testing.T) {
 }
 
 func TestRealIPSkipsChainedTrustedProxies(t *testing.T) {
-	// client, then two trusted hops appended the chain.
+	// После клиента два доверенных узла дополнили цепочку.
 	if ip := resolvedIP(t, []string{"10.0.0.0/8"}, "10.1.2.3:5555", "203.0.113.9, 10.9.9.9, 10.1.2.3"); ip != "203.0.113.9" {
 		t.Fatalf("must pick rightmost untrusted, got %s", ip)
 	}

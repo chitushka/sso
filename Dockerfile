@@ -1,5 +1,7 @@
 FROM node:22-alpine AS ui
 WORKDIR /ui
+ARG VERSION=dev
+ENV VITE_APP_VERSION=${VERSION}
 COPY web/admin/package.json web/admin/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/admin .

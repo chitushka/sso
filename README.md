@@ -21,7 +21,7 @@
 
 - Go 1.26.9, образ сборщика `golang:1.26.9-alpine`;
 - PostgreSQL;
-- Vue 3, JavaScript, Vite, Bootstrap 5, Pinia, Vue Router и Axios;
+- Vue 3, JavaScript, Vite 8, Bootstrap 5, Pinia 4, Vue Router 5 и Axios;
 - Docker и Docker Compose.
 
 ## Архитектура
@@ -98,7 +98,7 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d
 - используйте разные `SSO_JWT_SECRET` и `SSO_ENCRYPTION_KEY` длиной не менее 32 символов;
 - настройте SMTP с STARTTLS и HTTPS issuer.
 
-`X-Forwarded-For` учитывается только от узлов из `SSO_TRUSTED_PROXIES`. Встроенные миграции применяются при `SSO_MIGRATE_ON_START=true`; для поэтапного развёртывания применяйте файлы из `migrations/` отдельным заданием.
+`X-Forwarded-For` учитывается только от узлов из `SSO_TRUSTED_PROXIES`; после нормализации все обработчики читают IP только из `RemoteAddr`. Входящий `X-Request-ID` принимается лишь в безопасном ASCII-формате длиной до 64 символов, иначе сервер генерирует UUID. Встроенные миграции применяются при `SSO_MIGRATE_ON_START=true`; для поэтапного развёртывания применяйте файлы из `migrations/` отдельным заданием.
 
 ## Конфигурация
 
@@ -194,7 +194,7 @@ Access-токены RS256 содержат `kid`, `iss`, `aud`, `exp`, `iat` и 
 
 ## Административная панель
 
-SPA находится в `web/admin/`. В production она собирается в Docker и обслуживается Go-бинарником из `web/admin/dist`. Без `dist` сервер работает только как API.
+SPA находится в `web/admin/`. Интерфейс использует единый словарь `vue-i18n` и русский язык по умолчанию; протокольные идентификаторы и технические значения не переводятся. В production SPA собирается в Docker и обслуживается Go-бинарником из `web/admin/dist`. Без `dist` сервер работает только как API.
 
 ```bash
 cd web/admin
@@ -202,7 +202,7 @@ npm ci
 npm run dev
 ```
 
-Vite работает на `:5173` и проксирует API на `:8080`.
+Vite работает на `:5173` и проксирует API на `:8080`. Версия продукта едина для API и SPA: Docker build argument `VERSION` передаётся в Go через `ldflags`, а во frontend — как `VITE_APP_VERSION`; версия приватного npm-пакета не используется как версия продукта.
 
 ## Как подключить приложение к SSO
 
@@ -210,21 +210,21 @@ Vite работает на `:5173` и проксирует API на `:8080`.
 
 ### 1. Зарегистрируйте OAuth-клиента
 
-В панели откройте **Clients**, нажмите **New client** и заполните:
+В панели откройте **OAuth-клиенты**, нажмите **Новый клиент** и заполните:
 
 | Поле | Пример | Пояснение |
 | --- | --- | --- |
 | `client_id` | `hello_sso` | Уникальный идентификатор |
-| Name | `Hello SSO Demo App` | Отображаемое имя |
-| Type | `confidential` | `confidential` для backend, `public` для SPA или мобильного приложения |
-| Allowed scopes | `openid profile email` | Разрешённые области доступа |
-| Redirect URIs | `https://hello-sso.example.com/auth/callback` | Точный адрес возврата |
-| Post-logout redirect URIs | `https://hello-sso.example.com/` | Адрес после выхода |
+| Название | `Hello SSO Demo App` | Отображаемое имя |
+| Тип | `confidential` | `confidential` для backend, `public` для SPA или мобильного приложения |
+| Разрешённые scope | `openid profile email` | Разрешённые области доступа |
+| Redirect URI | `https://hello-sso.example.com/auth/callback` | Точный адрес возврата |
+| Post-logout redirect URI | `https://hello-sso.example.com/` | Адрес после выхода |
 | Back-channel logout URI | пусто | Необязательный серверный callback |
-| Skip consent | выключено | Только для доверенных приложений |
-| Enabled | включено | Клиент активен |
+| Не запрашивать согласие | выключено | Только для доверенных приложений |
+| Включён | включено | Клиент активен |
 
-`client_secret` показывается один раз. Храните его в менеджере секретов или серверном env-файле, не помещайте во frontend или Git. При утрате выполните **Rotate secret**.
+`client_secret` показывается один раз. Храните его в менеджере секретов или серверном env-файле, не помещайте во frontend или Git.
 
 `openid` включает OIDC и ID Token, `profile` разрешает имя и источник учётной записи, `email` — почту. Запрос неразрешённого scope вернёт `invalid_scope`.
 
@@ -322,7 +322,7 @@ make quality
 SSO_TEST_DATABASE_URL='postgres://sso:sso@127.0.0.1:5432/sso_test?sslmode=disable' go test -tags=integration ./internal/integration/...
 ```
 
-Набор проверяет административные CRUD-сценарии и полный цикл миграций `up → down → up` на изолированной базе. Для фронтенда выполните `cd web/admin`, затем `npm ci`, `npm audit --omit=dev` и `npm run build`. CI запускает unit-, race- и интеграционные тесты сервера, `govulncheck`, `golangci-lint`, а также сборку и аудит production-зависимостей фронтенда.
+Набор проверяет административные CRUD-сценарии и полный цикл миграций `up → down → up` на изолированной базе. Для фронтенда выполните `cd web/admin`, затем `npm ci`, `npm test`, `npm audit --omit=dev` и `npm run build`. UI smoke-тесты проверяют критические страницы на русском языке и безопасное отображение ошибок API. CI запускает unit-, race- и интеграционные тесты сервера, `govulncheck`, `golangci-lint`, а также тесты, сборку и аудит production-зависимостей фронтенда.
 
 ## План разработки
 

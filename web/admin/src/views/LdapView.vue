@@ -1,8 +1,10 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import api, { apiError } from '../api'
+import { useI18n } from 'vue-i18n'
 
 const providers = ref([])
+const { t } = useI18n()
 const error = ref('')
 const notice = ref('')
 const formOpen = ref(false)
@@ -26,7 +28,7 @@ const emptyForm = () => ({
 })
 const form = ref(emptyForm())
 
-// Group mappings panel
+// Панель сопоставления групп.
 const groups = ref([])
 const mappingsFor = ref(null)
 const mappings = ref([])
@@ -92,7 +94,7 @@ function openCreate() {
 
 function openEdit(p) {
   editingId.value = p.id
-  form.value = { ...p, bind_password: '' } // empty password keeps the stored one
+  form.value = { ...p, bind_password: '' } // Пустое значение сохраняет текущий пароль.
   formOpen.value = true
 }
 
@@ -117,14 +119,14 @@ async function test() {
   notice.value = ''
   try {
     await api.post('/api/v1/ldap/providers/test', form.value)
-    notice.value = 'Connection OK'
+    notice.value = t('ldap.connectionOK')
   } catch (e) {
-    error.value = 'Connection failed: ' + apiError(e)
+    error.value = t('ldap.connectionFailed', { error: apiError(e) })
   }
 }
 
 async function remove(p) {
-  if (!confirm(`Delete LDAP provider "${p.name}"?`)) return
+  if (!confirm(t('ldap.confirmDelete', { name: p.name }))) return
   error.value = ''
   try {
     await api.delete(`/api/v1/ldap/providers/${p.id}`)
@@ -137,67 +139,67 @@ async function remove(p) {
 
 <template>
   <div class="d-flex justify-content-between align-items-center mb-3">
-    <h3 class="mb-0">LDAP Providers</h3>
-    <button class="btn btn-primary btn-sm" @click="openCreate">New provider</button>
+    <h3 class="mb-0">{{ $t('ldap.title') }}</h3>
+    <button class="btn btn-primary btn-sm" @click="openCreate">{{ $t('ldap.create') }}</button>
   </div>
   <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
   <div v-if="notice" class="alert alert-success py-2">{{ notice }}</div>
 
   <form v-if="formOpen" class="card card-body mb-3" @submit.prevent="save">
     <div class="row g-2">
-      <div class="col-md-3"><label class="form-label small">Name</label><input v-model="form.name" class="form-control" required /></div>
-      <div class="col-md-3"><label class="form-label small">Host</label><input v-model="form.host" class="form-control" required /></div>
-      <div class="col-md-1"><label class="form-label small">Port</label><input v-model.number="form.port" type="number" class="form-control" /></div>
+      <div class="col-md-3"><label class="form-label small">{{ $t('common.name') }}</label><input v-model="form.name" class="form-control" required /></div>
+      <div class="col-md-3"><label class="form-label small">{{ $t('ldap.host') }}</label><input v-model="form.host" class="form-control" required /></div>
+      <div class="col-md-1"><label class="form-label small">{{ $t('ldap.port') }}</label><input v-model.number="form.port" type="number" class="form-control" /></div>
       <div class="col-md-5 d-flex align-items-end gap-4">
         <div class="form-check"><input v-model="form.use_tls" class="form-check-input" type="checkbox" id="tls" /><label class="form-check-label" for="tls">LDAPS</label></div>
         <div class="form-check"><input v-model="form.start_tls" class="form-check-input" type="checkbox" id="stls" /><label class="form-check-label" for="stls">StartTLS</label></div>
-        <div class="form-check"><input v-model="form.enabled" class="form-check-input" type="checkbox" id="en" /><label class="form-check-label" for="en">Enabled</label></div>
+        <div class="form-check"><input v-model="form.enabled" class="form-check-input" type="checkbox" id="en" /><label class="form-check-label" for="en">{{ $t('common.enabled') }}</label></div>
       </div>
       <div class="col-md-4"><label class="form-label small">Bind DN</label><input v-model="form.bind_dn" class="form-control" /></div>
       <div class="col-md-4">
-        <label class="form-label small">Bind password <span v-if="editingId" class="text-muted">(empty = keep current)</span></label>
+        <label class="form-label small">{{ $t('ldap.bindPassword') }} <span v-if="editingId" class="text-muted">{{ $t('common.emptyKeep') }}</span></label>
         <input v-model="form.bind_password" type="password" class="form-control" />
       </div>
       <div class="col-md-4"><label class="form-label small">Base DN</label><input v-model="form.base_dn" class="form-control" /></div>
-      <div class="col-md-6"><label class="form-label small">User filter</label><input v-model="form.user_filter" class="form-control" placeholder="(&(objectClass=user)(sAMAccountName={username}))" /></div>
-      <div class="col-md-2"><label class="form-label small">Username attr</label><input v-model="form.username_attribute" class="form-control" placeholder="sAMAccountName" /></div>
-      <div class="col-md-2"><label class="form-label small">Email attr</label><input v-model="form.email_attribute" class="form-control" placeholder="mail" /></div>
-      <div class="col-md-2"><label class="form-label small">Display name attr</label><input v-model="form.display_name_attribute" class="form-control" placeholder="displayName" /></div>
-      <div class="col-md-2"><label class="form-label small">Group attr</label><input v-model="form.group_attribute" class="form-control" placeholder="memberOf" /></div>
+      <div class="col-md-6"><label class="form-label small">{{ $t('ldap.userFilter') }}</label><input v-model="form.user_filter" class="form-control" placeholder="(&(objectClass=user)(sAMAccountName={username}))" /></div>
+      <div class="col-md-2"><label class="form-label small">{{ $t('ldap.usernameAttr') }}</label><input v-model="form.username_attribute" class="form-control" placeholder="sAMAccountName" /></div>
+      <div class="col-md-2"><label class="form-label small">{{ $t('ldap.emailAttr') }}</label><input v-model="form.email_attribute" class="form-control" placeholder="mail" /></div>
+      <div class="col-md-2"><label class="form-label small">{{ $t('ldap.displayNameAttr') }}</label><input v-model="form.display_name_attribute" class="form-control" placeholder="displayName" /></div>
+      <div class="col-md-2"><label class="form-label small">{{ $t('ldap.groupAttr') }}</label><input v-model="form.group_attribute" class="form-control" placeholder="memberOf" /></div>
       <div class="col-12 d-flex gap-2">
-        <button class="btn btn-success">Save</button>
-        <button type="button" class="btn btn-outline-primary" @click="test">Test connection</button>
-        <button type="button" class="btn btn-outline-secondary" @click="formOpen = false">Cancel</button>
+        <button class="btn btn-success">{{ $t('common.save') }}</button>
+        <button type="button" class="btn btn-outline-primary" @click="test">{{ $t('ldap.test') }}</button>
+        <button type="button" class="btn btn-outline-secondary" @click="formOpen = false">{{ $t('common.cancel') }}</button>
       </div>
     </div>
   </form>
 
   <table class="table table-hover align-middle">
-    <thead><tr><th>Name</th><th>Host</th><th>Security</th><th>Base DN</th><th>Enabled</th><th class="text-end">Actions</th></tr></thead>
+    <thead><tr><th>{{ $t('common.name') }}</th><th>{{ $t('ldap.host') }}</th><th>{{ $t('ldap.security') }}</th><th>Base DN</th><th>{{ $t('common.enabled') }}</th><th class="text-end">{{ $t('common.actions') }}</th></tr></thead>
     <tbody>
       <template v-for="p in providers" :key="p.id">
         <tr>
           <td>{{ p.name }}</td>
           <td><code>{{ p.host }}:{{ p.port }}</code></td>
-          <td>{{ p.use_tls ? 'LDAPS' : p.start_tls ? 'StartTLS' : 'plain' }}</td>
+          <td>{{ p.use_tls ? 'LDAPS' : p.start_tls ? 'StartTLS' : $t('ldap.plain') }}</td>
           <td class="small text-muted">{{ p.base_dn }}</td>
-          <td><span class="badge" :class="p.enabled ? 'bg-success' : 'bg-secondary'">{{ p.enabled ? 'yes' : 'no' }}</span></td>
+          <td><span class="badge" :class="p.enabled ? 'bg-success' : 'bg-secondary'">{{ p.enabled ? $t('common.yes') : $t('common.no') }}</span></td>
           <td class="text-end">
-            <button class="btn btn-outline-primary btn-sm me-1" @click="openMappings(p)">Group mappings</button>
-            <button class="btn btn-outline-secondary btn-sm me-1" @click="openEdit(p)">Edit</button>
-            <button class="btn btn-outline-danger btn-sm" @click="remove(p)">Delete</button>
+            <button class="btn btn-outline-primary btn-sm me-1" @click="openMappings(p)">{{ $t('ldap.mappings') }}</button>
+            <button class="btn btn-outline-secondary btn-sm me-1" @click="openEdit(p)">{{ $t('common.edit') }}</button>
+            <button class="btn btn-outline-danger btn-sm" @click="remove(p)">{{ $t('common.delete') }}</button>
           </td>
         </tr>
         <tr v-if="mappingsFor === p.id">
           <td colspan="6" class="bg-light">
             <div class="p-2">
-              <p class="small text-muted mb-2">Directory groups (as returned by <code>{{ p.group_attribute || 'memberOf' }}</code>) are mapped to SSO groups at login.</p>
+              <p class="small text-muted mb-2">{{ $t('ldap.mappingHelp', { attribute: p.group_attribute || 'memberOf' }) }}</p>
               <table class="table table-sm mb-2">
                 <tbody>
                   <tr v-for="m in mappings" :key="m.id">
                     <td class="small font-monospace">{{ m.ldap_group }}</td>
                     <td class="small">→ <code>{{ groupCode(m.group_id) }}</code></td>
-                    <td class="text-end"><button class="btn btn-outline-danger btn-sm" @click="removeMapping(p.id, m.id)">Remove</button></td>
+                    <td class="text-end"><button class="btn btn-outline-danger btn-sm" @click="removeMapping(p.id, m.id)">{{ $t('common.remove') }}</button></td>
                   </tr>
                 </tbody>
               </table>
@@ -205,11 +207,11 @@ async function remove(p) {
                 <div class="col-md-6"><input v-model="newMapping.ldap_group" class="form-control form-control-sm" placeholder="CN=Admins,OU=Groups,DC=example,DC=org" required /></div>
                 <div class="col-md-4">
                   <select v-model="newMapping.group_id" class="form-select form-select-sm" required>
-                    <option value="" disabled>SSO group…</option>
+                    <option value="" disabled>{{ $t('ldap.selectGroup') }}</option>
                     <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.code }}</option>
                   </select>
                 </div>
-                <div class="col-md-2"><button class="btn btn-success btn-sm w-100">Add mapping</button></div>
+                <div class="col-md-2"><button class="btn btn-success btn-sm w-100">{{ $t('ldap.addMapping') }}</button></div>
               </form>
             </div>
           </td>

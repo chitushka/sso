@@ -1,16 +1,18 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import api, { apiError } from '../api'
+import { useI18n } from 'vue-i18n'
 
 const users = ref([])
+const { t } = useI18n()
 const roles = ref([])
 const groups = ref([])
 const error = ref('')
 const creating = ref(false)
 const createForm = ref({ username: '', email: '', password: '', status: 'active', first_name: '', last_name: '' })
-const editing = ref(null) // user id being edited
+const editing = ref(null) // ID редактируемого пользователя.
 const editForm = ref({})
-const rolesFor = ref(null) // user id whose roles panel is open
+const rolesFor = ref(null) // ID пользователя с открытой панелью ролей.
 const userRoles = ref([])
 const groupsFor = ref(null)
 const userGroups = ref([])
@@ -79,7 +81,7 @@ async function saveEdit(id) {
 }
 
 async function removeUser(u) {
-  if (!confirm(`Delete user "${u.username}"? The account will be deactivated.`)) return
+  if (!confirm(t('users.confirmDelete', { name: u.username }))) return
   error.value = ''
   try {
     await api.delete(`/api/v1/users/${u.id}`)
@@ -115,16 +117,16 @@ async function toggleRole(userId, role, assigned) {
 
 <template>
   <div class="d-flex justify-content-between align-items-center mb-3">
-    <h3 class="mb-0">Users</h3>
-    <button class="btn btn-primary btn-sm" @click="creating = !creating">New user</button>
+    <h3 class="mb-0">{{ $t('users.title') }}</h3>
+    <button class="btn btn-primary btn-sm" @click="creating = !creating">{{ $t('users.create') }}</button>
   </div>
   <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
 
   <form v-if="creating" class="card card-body mb-3" @submit.prevent="createUser">
     <div class="row g-2">
-      <div class="col-md-3"><input v-model="createForm.username" class="form-control" placeholder="username" required /></div>
-      <div class="col-md-3"><input v-model="createForm.email" type="email" class="form-control" placeholder="email" required /></div>
-      <div class="col-md-3"><input v-model="createForm.password" type="password" class="form-control" placeholder="password (min 12)" minlength="12" maxlength="128" required /></div>
+      <div class="col-md-3"><input v-model="createForm.username" class="form-control" :placeholder="$t('common.username')" required /></div>
+      <div class="col-md-3"><input v-model="createForm.email" type="email" class="form-control" :placeholder="$t('common.email')" required /></div>
+      <div class="col-md-3"><input v-model="createForm.password" type="password" class="form-control" :placeholder="$t('users.passwordHint')" minlength="12" maxlength="128" required /></div>
       <div class="col-md-2">
         <select v-model="createForm.status" class="form-select">
           <option>active</option>
@@ -132,15 +134,15 @@ async function toggleRole(userId, role, assigned) {
           <option>pending</option>
         </select>
       </div>
-      <div class="col-md-1"><button class="btn btn-success w-100">Save</button></div>
-      <div class="col-md-3"><input v-model="createForm.first_name" class="form-control" placeholder="first name" /></div>
-      <div class="col-md-3"><input v-model="createForm.last_name" class="form-control" placeholder="last name" /></div>
+      <div class="col-md-1"><button class="btn btn-success w-100">{{ $t('common.save') }}</button></div>
+      <div class="col-md-3"><input v-model="createForm.first_name" class="form-control" :placeholder="$t('common.firstName')" /></div>
+      <div class="col-md-3"><input v-model="createForm.last_name" class="form-control" :placeholder="$t('common.lastName')" /></div>
     </div>
   </form>
 
   <table class="table table-hover align-middle">
     <thead>
-      <tr><th>Username</th><th>Email</th><th>Status</th><th>Source</th><th>Last login</th><th class="text-end">Actions</th></tr>
+      <tr><th>{{ $t('common.username') }}</th><th>{{ $t('common.email') }}</th><th>{{ $t('common.status') }}</th><th>{{ $t('common.source') }}</th><th>{{ $t('users.lastLogin') }}</th><th class="text-end">{{ $t('common.actions') }}</th></tr>
     </thead>
     <tbody>
       <template v-for="u in users" :key="u.id">
@@ -156,8 +158,8 @@ async function toggleRole(userId, role, assigned) {
             <td>{{ u.source }}</td>
             <td></td>
             <td class="text-end">
-              <button class="btn btn-success btn-sm me-1" @click="saveEdit(u.id)">Save</button>
-              <button class="btn btn-outline-secondary btn-sm" @click="editing = null">Cancel</button>
+              <button class="btn btn-success btn-sm me-1" @click="saveEdit(u.id)">{{ $t('common.save') }}</button>
+              <button class="btn btn-outline-secondary btn-sm" @click="editing = null">{{ $t('common.cancel') }}</button>
             </td>
           </template>
           <template v-else>
@@ -167,10 +169,10 @@ async function toggleRole(userId, role, assigned) {
             <td>{{ u.source }}</td>
             <td class="text-muted small">{{ u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '—' }}</td>
             <td class="text-end">
-              <button class="btn btn-outline-primary btn-sm me-1" @click="openRoles(u)">Roles</button>
-              <button class="btn btn-outline-primary btn-sm me-1" @click="openGroups(u)">Groups</button>
-              <button class="btn btn-outline-secondary btn-sm me-1" @click="startEdit(u)">Edit</button>
-              <button class="btn btn-outline-danger btn-sm" @click="removeUser(u)">Delete</button>
+              <button class="btn btn-outline-primary btn-sm me-1" @click="openRoles(u)">{{ $t('users.roles') }}</button>
+              <button class="btn btn-outline-primary btn-sm me-1" @click="openGroups(u)">{{ $t('users.groups') }}</button>
+              <button class="btn btn-outline-secondary btn-sm me-1" @click="startEdit(u)">{{ $t('common.edit') }}</button>
+              <button class="btn btn-outline-danger btn-sm" @click="removeUser(u)">{{ $t('common.delete') }}</button>
             </td>
           </template>
         </tr>
@@ -193,7 +195,7 @@ async function toggleRole(userId, role, assigned) {
         <tr v-if="groupsFor === u.id">
           <td colspan="6" class="bg-light">
             <div class="d-flex flex-wrap gap-3 p-2">
-              <span v-if="!groups.length" class="text-muted small">No groups defined yet.</span>
+              <span v-if="!groups.length" class="text-muted small">{{ $t('users.noGroups') }}</span>
               <div v-for="g in groups" :key="g.id" class="form-check">
                 <input
                   class="form-check-input"

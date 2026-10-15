@@ -23,11 +23,11 @@ onMounted(load)
 </script>
 
 <template>
-  <h3 class="mb-3">Audit Log</h3>
+  <h3 class="mb-3">{{ $t('audit.title') }}</h3>
   <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
 
   <form class="row g-2 mb-3" @submit.prevent="load">
-    <div class="col-md-3"><input v-model="filters.action" class="form-control" placeholder="action (e.g. login_failed)" /></div>
+    <div class="col-md-3"><input v-model="filters.action" class="form-control" :placeholder="$t('audit.actionHint')" /></div>
     <div class="col-md-3"><input v-model="filters.from" type="datetime-local" class="form-control" /></div>
     <div class="col-md-3"><input v-model="filters.to" type="datetime-local" class="form-control" /></div>
     <div class="col-md-1">
@@ -37,11 +37,11 @@ onMounted(load)
         <option :value="200">200</option>
       </select>
     </div>
-    <div class="col-md-2"><button class="btn btn-primary w-100">Filter</button></div>
+    <div class="col-md-2"><button class="btn btn-primary w-100">{{ $t('common.filter') }}</button></div>
   </form>
 
   <table class="table table-sm table-hover align-middle">
-    <thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Actor</th><th>IP</th></tr></thead>
+    <thead><tr><th>{{ $t('audit.time') }}</th><th>{{ $t('audit.action') }}</th><th>{{ $t('audit.target') }}</th><th>{{ $t('audit.actor') }}</th><th>IP</th></tr></thead>
     <tbody>
       <tr v-for="e in events" :key="e.id">
         <td class="text-muted small">{{ new Date(e.created_at).toLocaleString() }}</td>
@@ -52,5 +52,5 @@ onMounted(load)
       </tr>
     </tbody>
   </table>
-  <p v-if="!events.length" class="text-muted">No events.</p>
+  <p v-if="!events.length" class="text-muted">{{ $t('audit.empty') }}</p>
 </template>

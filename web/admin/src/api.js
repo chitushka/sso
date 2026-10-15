@@ -1,8 +1,8 @@
 import axios from 'axios'
+import i18n from './i18n'
 
-// Same-origin API: in dev Vite proxies to :8080, in production the Go binary
-// serves both the SPA and the API. withCredentials keeps the sso_session
-// cookie flowing for the OAuth authorize/consent/logout endpoints.
+// Same-origin API: при разработке Vite проксирует :8080, а в production Go-бинарник
+// обслуживает SPA и API. withCredentials передаёт cookie sso_session для OAuth.
 const api = axios.create({ baseURL: '/', withCredentials: true })
 
 api.interceptors.request.use((config) => {
@@ -28,7 +28,17 @@ api.interceptors.response.use(
 
 export function apiError(err) {
   const data = err.response?.data
-  return data?.error_description || data?.error || err.message || 'request failed'
+  const code = data?.error
+  const protocolErrors = new Set([
+    'invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type',
+    'invalid_scope', 'server_error', 'temporarily_unavailable', 'login_required', 'consent_required'
+  ])
+  if (protocolErrors.has(code) && !data?.error_description) return code
+  const keys = {
+    400: 'errors.invalid', 401: 'errors.unauthorized', 403: 'errors.forbidden', 404: 'errors.notFound',
+    409: 'errors.conflict', 429: 'errors.tooMany', 500: 'errors.server', 502: 'errors.unavailable', 503: 'errors.unavailable'
+  }
+  return i18n.global.t(keys[err.response?.status] || 'errors.request')
 }
 
 export default api

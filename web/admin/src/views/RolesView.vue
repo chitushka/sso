@@ -1,8 +1,10 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import api, { apiError } from '../api'
+import { useI18n } from 'vue-i18n'
 
 const rolesList = ref([])
+const { t } = useI18n()
 const permissions = ref([])
 const error = ref('')
 const creating = ref(false)
@@ -52,7 +54,7 @@ async function saveEdit(id) {
 }
 
 async function removeRole(r) {
-  if (!confirm(`Delete role "${r.code}"?`)) return
+  if (!confirm(t('roles.confirmDelete', { code: r.code }))) return
   error.value = ''
   try {
     await api.delete(`/api/v1/roles/${r.id}`)
@@ -88,22 +90,22 @@ async function togglePerm(roleId, perm, assigned) {
 
 <template>
   <div class="d-flex justify-content-between align-items-center mb-3">
-    <h3 class="mb-0">Roles</h3>
-    <button class="btn btn-primary btn-sm" @click="creating = !creating">New role</button>
+    <h3 class="mb-0">{{ $t('roles.title') }}</h3>
+    <button class="btn btn-primary btn-sm" @click="creating = !creating">{{ $t('roles.create') }}</button>
   </div>
   <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
 
   <form v-if="creating" class="card card-body mb-3" @submit.prevent="createRole">
     <div class="row g-2">
-      <div class="col-md-3"><input v-model="createForm.code" class="form-control" placeholder="code" required /></div>
-      <div class="col-md-3"><input v-model="createForm.name" class="form-control" placeholder="name" required /></div>
-      <div class="col-md-5"><input v-model="createForm.description" class="form-control" placeholder="description" /></div>
-      <div class="col-md-1"><button class="btn btn-success w-100">Save</button></div>
+      <div class="col-md-3"><input v-model="createForm.code" class="form-control" :placeholder="$t('common.code')" required /></div>
+      <div class="col-md-3"><input v-model="createForm.name" class="form-control" :placeholder="$t('common.name')" required /></div>
+      <div class="col-md-5"><input v-model="createForm.description" class="form-control" :placeholder="$t('common.description')" /></div>
+      <div class="col-md-1"><button class="btn btn-success w-100">{{ $t('common.save') }}</button></div>
     </div>
   </form>
 
   <table class="table table-hover align-middle">
-    <thead><tr><th>Code</th><th>Name</th><th>Description</th><th class="text-end">Actions</th></tr></thead>
+    <thead><tr><th>{{ $t('common.code') }}</th><th>{{ $t('common.name') }}</th><th>{{ $t('common.description') }}</th><th class="text-end">{{ $t('common.actions') }}</th></tr></thead>
     <tbody>
       <template v-for="r in rolesList" :key="r.id">
         <tr>
@@ -112,8 +114,8 @@ async function togglePerm(roleId, perm, assigned) {
             <td><input v-model="editForm.name" class="form-control form-control-sm" /></td>
             <td><input v-model="editForm.description" class="form-control form-control-sm" /></td>
             <td class="text-end">
-              <button class="btn btn-success btn-sm me-1" @click="saveEdit(r.id)">Save</button>
-              <button class="btn btn-outline-secondary btn-sm" @click="editing = null">Cancel</button>
+              <button class="btn btn-success btn-sm me-1" @click="saveEdit(r.id)">{{ $t('common.save') }}</button>
+              <button class="btn btn-outline-secondary btn-sm" @click="editing = null">{{ $t('common.cancel') }}</button>
             </td>
           </template>
           <template v-else>
@@ -121,14 +123,14 @@ async function togglePerm(roleId, perm, assigned) {
             <td>{{ r.name }}</td>
             <td class="text-muted">{{ r.description }}</td>
             <td class="text-end">
-              <button class="btn btn-outline-primary btn-sm me-1" @click="openPerms(r)">Permissions</button>
-              <button class="btn btn-outline-secondary btn-sm me-1" @click="startEdit(r)">Edit</button>
+              <button class="btn btn-outline-primary btn-sm me-1" @click="openPerms(r)">{{ $t('roles.permissions') }}</button>
+              <button class="btn btn-outline-secondary btn-sm me-1" @click="startEdit(r)">{{ $t('common.edit') }}</button>
               <button
                 class="btn btn-outline-danger btn-sm"
                 :disabled="r.code === 'admin' || r.code === 'user'"
                 @click="removeRole(r)"
               >
-                Delete
+                {{ $t('common.delete') }}
               </button>
             </td>
           </template>

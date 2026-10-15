@@ -7,7 +7,6 @@ import (
 	"github.com/chitushka/sso/internal/users"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"net"
 	"net/http"
 )
 
@@ -25,7 +24,7 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 				httpx.Error(w, 400, "invalid json body")
 				return
 			}
-			res, err := svc.Login(r.Context(), LoginInput{Username: req.Username, Password: req.Password, IP: clientIP(r), UserAgent: r.UserAgent()})
+			res, err := svc.Login(r.Context(), LoginInput{Username: req.Username, Password: req.Password, IP: httpx.ClientIP(r), UserAgent: r.UserAgent()})
 			if err != nil {
 				if errors.Is(err, ErrLoginLocked) {
 					httpx.Error(w, 429, "too many failed attempts, try again later")
@@ -105,8 +104,8 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 				httpx.Error(w, 500, "failed to revoke sessions")
 				return
 			}
-			// "Sign out everywhere" must also kill already-issued access tokens,
-			// and bust the cache so the cutoff takes effect immediately.
+			// Выход на всех устройствах также отзывает уже выданные access-токены
+			// и очищает кэш, чтобы ограничение применилось немедленно.
 			_ = userRepo.InvalidateTokens(r.Context(), userID)
 			if inv, ok := revocations.(TokenCacheInvalidator); ok {
 				inv.Invalidate(userID)
@@ -133,14 +132,4 @@ func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessi
 			httpx.JSON(w, 200, u)
 		})
 	})
-}
-
-// clientIP returns the peer address. RealIP middleware has already resolved any
-// trusted X-Forwarded-For into RemoteAddr and stripped the header, so trusting
-// the header here would only reopen the per-IP lockout/rate-limit bypass.
-func clientIP(r *http.Request) string {
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }

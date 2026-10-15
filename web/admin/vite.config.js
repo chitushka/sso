@@ -1,9 +1,12 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// In dev the API runs on :8080; cookies must flow, so we proxy instead of CORS.
+// В режиме разработки API работает на :8080; proxy сохраняет cookie без CORS.
 export default defineConfig({
   plugins: [vue()],
+  test: {
+    environment: 'jsdom'
+  },
   server: {
     port: 5173,
     proxy: {

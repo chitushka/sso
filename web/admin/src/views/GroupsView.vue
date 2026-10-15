@@ -1,8 +1,10 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import api, { apiError } from '../api'
+import { useI18n } from 'vue-i18n'
 
 const groups = ref([])
+const { t } = useI18n()
 const roles = ref([])
 const error = ref('')
 const creating = ref(false)
@@ -52,7 +54,7 @@ async function saveEdit(id) {
 }
 
 async function removeGroup(g) {
-  if (!confirm(`Delete group "${g.code}"?`)) return
+  if (!confirm(t('groups.confirmDelete', { code: g.code }))) return
   error.value = ''
   try {
     await api.delete(`/api/v1/groups/${g.id}`)
@@ -88,23 +90,23 @@ async function toggleRole(groupId, role, assigned) {
 
 <template>
   <div class="d-flex justify-content-between align-items-center mb-3">
-    <h3 class="mb-0">Groups</h3>
-    <button class="btn btn-primary btn-sm" @click="creating = !creating">New group</button>
+    <h3 class="mb-0">{{ $t('groups.title') }}</h3>
+    <button class="btn btn-primary btn-sm" @click="creating = !creating">{{ $t('groups.create') }}</button>
   </div>
-  <p class="text-muted small">Members inherit every role assigned to their groups. LDAP logins can be mapped onto groups on the LDAP page.</p>
+  <p class="text-muted small">{{ $t('groups.help') }}</p>
   <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
 
   <form v-if="creating" class="card card-body mb-3" @submit.prevent="createGroup">
     <div class="row g-2">
-      <div class="col-md-3"><input v-model="createForm.code" class="form-control" placeholder="code" required /></div>
-      <div class="col-md-3"><input v-model="createForm.name" class="form-control" placeholder="name" required /></div>
-      <div class="col-md-5"><input v-model="createForm.description" class="form-control" placeholder="description" /></div>
-      <div class="col-md-1"><button class="btn btn-success w-100">Save</button></div>
+      <div class="col-md-3"><input v-model="createForm.code" class="form-control" :placeholder="$t('common.code')" required /></div>
+      <div class="col-md-3"><input v-model="createForm.name" class="form-control" :placeholder="$t('common.name')" required /></div>
+      <div class="col-md-5"><input v-model="createForm.description" class="form-control" :placeholder="$t('common.description')" /></div>
+      <div class="col-md-1"><button class="btn btn-success w-100">{{ $t('common.save') }}</button></div>
     </div>
   </form>
 
   <table class="table table-hover align-middle">
-    <thead><tr><th>Code</th><th>Name</th><th>Description</th><th class="text-end">Actions</th></tr></thead>
+    <thead><tr><th>{{ $t('common.code') }}</th><th>{{ $t('common.name') }}</th><th>{{ $t('common.description') }}</th><th class="text-end">{{ $t('common.actions') }}</th></tr></thead>
     <tbody>
       <template v-for="g in groups" :key="g.id">
         <tr>
@@ -113,8 +115,8 @@ async function toggleRole(groupId, role, assigned) {
             <td><input v-model="editForm.name" class="form-control form-control-sm" /></td>
             <td><input v-model="editForm.description" class="form-control form-control-sm" /></td>
             <td class="text-end">
-              <button class="btn btn-success btn-sm me-1" @click="saveEdit(g.id)">Save</button>
-              <button class="btn btn-outline-secondary btn-sm" @click="editing = null">Cancel</button>
+              <button class="btn btn-success btn-sm me-1" @click="saveEdit(g.id)">{{ $t('common.save') }}</button>
+              <button class="btn btn-outline-secondary btn-sm" @click="editing = null">{{ $t('common.cancel') }}</button>
             </td>
           </template>
           <template v-else>
@@ -122,9 +124,9 @@ async function toggleRole(groupId, role, assigned) {
             <td>{{ g.name }}</td>
             <td class="text-muted">{{ g.description }}</td>
             <td class="text-end">
-              <button class="btn btn-outline-primary btn-sm me-1" @click="openRoles(g)">Roles</button>
-              <button class="btn btn-outline-secondary btn-sm me-1" @click="startEdit(g)">Edit</button>
-              <button class="btn btn-outline-danger btn-sm" @click="removeGroup(g)">Delete</button>
+              <button class="btn btn-outline-primary btn-sm me-1" @click="openRoles(g)">{{ $t('groups.roles') }}</button>
+              <button class="btn btn-outline-secondary btn-sm me-1" @click="startEdit(g)">{{ $t('common.edit') }}</button>
+              <button class="btn btn-outline-danger btn-sm" @click="removeGroup(g)">{{ $t('common.delete') }}</button>
             </td>
           </template>
         </tr>
@@ -147,5 +149,5 @@ async function toggleRole(groupId, role, assigned) {
       </template>
     </tbody>
   </table>
-  <p v-if="!groups.length" class="text-muted">No groups yet.</p>
+  <p v-if="!groups.length" class="text-muted">{{ $t('groups.empty') }}</p>
 </template>

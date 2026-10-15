@@ -2,7 +2,6 @@ package broker
 
 import (
 	"errors"
-	"net"
 	"net/http"
 	"strings"
 
@@ -14,7 +13,7 @@ import (
 )
 
 func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler, require func(string, string) func(http.Handler) http.Handler) {
-	// Public: which sign-in buttons the login page shows.
+	// Публичный список определяет кнопки внешнего входа на странице авторизации.
 	r.Get("/api/v1/broker/providers", func(w http.ResponseWriter, req *http.Request) {
 		out, err := svc.PublicProviders(req.Context())
 		if err != nil {
@@ -28,7 +27,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 		httpx.NoStore(w)
 		cont := req.URL.Query().Get("continue")
 		if !safeContinue(cont) {
-			cont = "/" // only same-origin continue targets
+			cont = "/" // Разрешены только same-origin адреса продолжения.
 		}
 		redirect, err := svc.Start(req.Context(), chi.URLParam(req, "code"), cont)
 		if err != nil {
@@ -48,7 +47,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			http.Redirect(w, req, "/login?broker_error="+e, http.StatusFound)
 			return
 		}
-		res, cont, err := svc.Callback(req.Context(), chi.URLParam(req, "code"), req.URL.Query().Get("state"), req.URL.Query().Get("code"), auth.LoginInput{IP: clientIP(req), UserAgent: req.UserAgent()})
+		res, cont, err := svc.Callback(req.Context(), chi.URLParam(req, "code"), req.URL.Query().Get("state"), req.URL.Query().Get("code"), auth.LoginInput{IP: httpx.ClientIP(req), UserAgent: req.UserAgent()})
 		if err != nil {
 			http.Redirect(w, req, "/login?broker_error=failed", http.StatusFound)
 			return
@@ -72,7 +71,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 				return
 			}
 			for i := range out {
-				out[i].ClientSecret = "" // never expose secrets
+				out[i].ClientSecret = "" // Секреты никогда не возвращаются клиенту.
 			}
 			httpx.JSON(w, 200, out)
 		})
@@ -143,13 +142,4 @@ func safeContinue(target string) bool {
 		!strings.HasPrefix(target, "//") &&
 		!strings.HasPrefix(target, `/\`) &&
 		!strings.ContainsAny(target, "\r\n")
-}
-
-// clientIP returns the peer address; RealIP has already folded any trusted
-// X-Forwarded-For into RemoteAddr and removed the header.
-func clientIP(r *http.Request) string {
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }
