@@ -27,7 +27,7 @@ func listenLDAP(t *testing.T, handler func(net.Conn) error) (Provider, <-chan er
 			errorsCh <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		errorsCh <- handler(conn)
 	}()
 	host, rawPort, err := net.SplitHostPort(listener.Addr().String())
@@ -87,16 +87,19 @@ func readBytesAndHang(conn net.Conn) error {
 }
 
 func TestLDAPBindStopsWhenContextCancelled(t *testing.T) {
-	accepted := make(chan struct{})
+	requestReceived := make(chan struct{})
 	provider, serverResult := listenLDAP(t, func(conn net.Conn) error {
-		close(accepted)
-		return readRequestAndHang(conn)
+		if _, err := ber.ReadPacket(conn); err != nil {
+			return fmt.Errorf("прочитать LDAP-запрос: %w", err)
+		}
+		close(requestReceived)
+		return hangUntilClosed(conn)
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { result <- NewClient().TestConnection(ctx, provider) }()
 	select {
-	case <-accepted:
+	case <-requestReceived:
 	case <-time.After(time.Second):
 		t.Fatal("LDAP-соединение не установлено")
 	}

@@ -117,7 +117,7 @@ func (r *PostgresRepository) Update(ctx context.Context, u User) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var current Status
 	if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id=$1 FOR UPDATE`, u.ID).Scan(&current); err != nil {

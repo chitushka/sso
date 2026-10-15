@@ -19,7 +19,7 @@
 
 ## Стек
 
-- Go 1.25.0, образ сборщика `golang:1.25-alpine`;
+- Go 1.26.9, образ сборщика `golang:1.26.9-alpine`;
 - PostgreSQL;
 - Vue 3, JavaScript, Vite, Bootstrap 5, Pinia, Vue Router и Axios;
 - Docker и Docker Compose.
@@ -308,18 +308,21 @@ https://sso.example.com/oauth2/logout
 
 ## Проверки качества
 
+Полный воспроизводимый набор серверных проверок запускается в Docker:
+
 ```bash
-gofmt -w <изменённые-файлы.go>
-go test ./...
-go vet ./...
-govulncheck ./...
-git diff --check
+make quality
 ```
 
-Для фронтенда: `cd web/admin`, затем `npm ci`, `npm audit --omit=dev` и `npm run build`.
-CI выполняет аудит production-зависимостей фронтенда и отклоняет сборку при обнаружении известных уязвимостей.
+Команда собирает образ на Go 1.26.9 с закреплёнными версиями `govulncheck` и `golangci-lint`, затем проверяет форматирование, выполняет `go vet`, unit-тесты, race-тесты с CGO, поиск известных уязвимостей и lint. Перед запуском всё равно форматируйте изменённые Go-файлы командой `gofmt -w` и проверяйте патч через `git diff --check`.
 
-Интеграционные тесты находятся в `internal/integration`, используют build tag `integration` и требуют PostgreSQL.
+Интеграционные тесты находятся в `internal/integration`, используют build tag `integration` и требуют отдельную базу PostgreSQL:
+
+```bash
+SSO_TEST_DATABASE_URL='postgres://sso:sso@127.0.0.1:5432/sso_test?sslmode=disable' go test -tags=integration ./internal/integration/...
+```
+
+Набор проверяет административные CRUD-сценарии и полный цикл миграций `up → down → up` на изолированной базе. Для фронтенда выполните `cd web/admin`, затем `npm ci`, `npm audit --omit=dev` и `npm run build`. CI запускает unit-, race- и интеграционные тесты сервера, `govulncheck`, `golangci-lint`, а также сборку и аудит production-зависимостей фронтенда.
 
 ## План разработки
 

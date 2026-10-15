@@ -88,3 +88,29 @@ func Up(databaseURL string) error {
 	}
 	return nil
 }
+
+// Down откатывает все миграции. Метод предназначен для проверки обратимости
+// схемы и контролируемого административного отката, но не вызывается приложением.
+func Down(databaseURL string) error {
+	db, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	driver, err := migratepgx.WithInstance(db, &migratepgx.Config{})
+	if err != nil {
+		return err
+	}
+	src, err := iofs.New(migrations.FS, ".")
+	if err != nil {
+		return err
+	}
+	m, err := migrate.NewWithInstance("iofs", src, "pgx5", driver)
+	if err != nil {
+		return err
+	}
+	if err := m.Down(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return err
+	}
+	return nil
+}

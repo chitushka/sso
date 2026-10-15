@@ -75,7 +75,8 @@ func (c *Client) dial(ctx context.Context, p Provider) (*clientConnection, error
 		return nil, operationError(ctx, err)
 	}
 
-	var wire net.Conn = raw
+	var wire net.Conn
+	wire = raw
 	if p.UseTLS {
 		tlsConn := tls.Client(raw, &tls.Config{ServerName: p.Host, MinVersion: tls.VersionTLS12})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
@@ -106,6 +107,9 @@ func operationError(ctx context.Context, err error) error {
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {

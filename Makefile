@@ -1,4 +1,7 @@
-.PHONY: fmt test build docker-build
+.PHONY: fmt test build docker-build quality
+
+QUALITY_IMAGE ?= sso-quality
+
 fmt:
 	gofmt -w ./cmd ./internal
 
@@ -10,3 +13,7 @@ build:
 
 docker-build:
 	docker compose build
+
+quality:
+	docker build --file Dockerfile.quality --tag $(QUALITY_IMAGE) .
+	docker run --rm $(QUALITY_IMAGE)

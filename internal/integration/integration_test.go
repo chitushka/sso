@@ -34,6 +34,7 @@ import (
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/broker"
 	"github.com/chitushka/sso/internal/config"
+	"github.com/chitushka/sso/internal/dbmigrate"
 	"github.com/chitushka/sso/internal/middleware"
 	"github.com/chitushka/sso/internal/oauth"
 	"github.com/chitushka/sso/internal/oidc"
@@ -381,6 +382,89 @@ func sharedRateLimiterEndToEnd(t *testing.T) {
 	}
 }
 
+func administrativeCRUDEndToEnd(t *testing.T, credential string) {
+	var role struct {
+		ID string `json:"id"`
+	}
+	if resp := doJSON(t, http.MethodPost, "/api/v1/roles", credential, map[string]string{"code": "support", "name": "Support"}, &role); resp.StatusCode != http.StatusCreated || role.ID == "" {
+		t.Fatalf("create role: %d %+v", resp.StatusCode, role)
+	}
+	if resp := doJSON(t, http.MethodPut, "/api/v1/roles/"+role.ID, credential, map[string]string{"name": "Support team", "description": "Support operators"}, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("update role: %d", resp.StatusCode)
+	}
+
+	var group struct {
+		ID string `json:"id"`
+	}
+	if resp := doJSON(t, http.MethodPost, "/api/v1/groups", credential, map[string]string{"code": "support", "name": "Support"}, &group); resp.StatusCode != http.StatusCreated || group.ID == "" {
+		t.Fatalf("create group: %d %+v", resp.StatusCode, group)
+	}
+	if resp := doJSON(t, http.MethodPut, "/api/v1/groups/"+group.ID, credential, map[string]string{"name": "Support team", "description": "Support operators"}, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("update group: %d", resp.StatusCode)
+	}
+	if resp := doJSON(t, http.MethodPost, "/api/v1/groups/"+group.ID+"/roles", credential, map[string]string{"role_id": role.ID}, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("assign role to group: %d", resp.StatusCode)
+	}
+	if resp := doJSON(t, http.MethodGet, "/api/v1/groups/"+group.ID+"/roles", credential, nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("list group roles: %d", resp.StatusCode)
+	}
+	if resp := doJSON(t, http.MethodDelete, "/api/v1/groups/"+group.ID+"/roles/"+role.ID, credential, nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("remove role from group: %d", resp.StatusCode)
+	}
+
+	var ldapProvider struct {
+		ID string `json:"id"`
+	}
+	ldapBody := map[string]any{
+		"name": "Directory", "host": "ldap.example.org", "port": 389,
+		"bind_dn": "cn=reader,dc=example,dc=org", "bind_password": "directory-secret",
+		"base_dn": "dc=example,dc=org", "user_filter": "(uid={username})",
+		"username_attribute": "uid", "email_attribute": "mail", "display_name_attribute": "cn",
+		"group_attribute": "memberOf", "enabled": true,
+	}
+	if resp := doJSON(t, http.MethodPost, "/api/v1/ldap/providers", credential, ldapBody, &ldapProvider); resp.StatusCode != http.StatusCreated || ldapProvider.ID == "" {
+		t.Fatalf("create LDAP provider: %d %+v", resp.StatusCode, ldapProvider)
+	}
+	ldapBody["name"] = "Directory updated"
+	if resp := doJSON(t, http.MethodPut, "/api/v1/ldap/providers/"+ldapProvider.ID, credential, ldapBody, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("update LDAP provider: %d", resp.StatusCode)
+	}
+	if resp := doJSON(t, http.MethodGet, "/api/v1/ldap/providers", credential, nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("list LDAP providers: %d", resp.StatusCode)
+	}
+
+	var identityProvider struct {
+		ID string `json:"id"`
+	}
+	identityBody := map[string]any{
+		"code": "corporate", "name": "Corporate", "type": "oidc", "client_id": "corporate-client",
+		"client_secret": "corporate-secret", "authorize_url": "https://idp.example.org/authorize",
+		"token_url": "https://idp.example.org/token", "userinfo_url": "https://idp.example.org/userinfo",
+		"scopes": "openid profile email", "enabled": true,
+	}
+	if resp := doJSON(t, http.MethodPost, "/api/v1/identity-providers", credential, identityBody, &identityProvider); resp.StatusCode != http.StatusCreated || identityProvider.ID == "" {
+		t.Fatalf("create identity provider: %d %+v", resp.StatusCode, identityProvider)
+	}
+	identityBody["name"] = "Corporate updated"
+	if resp := doJSON(t, http.MethodPut, "/api/v1/identity-providers/"+identityProvider.ID, credential, identityBody, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("update identity provider: %d", resp.StatusCode)
+	}
+	if resp := doJSON(t, http.MethodGet, "/api/v1/identity-providers", credential, nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("list identity providers: %d", resp.StatusCode)
+	}
+
+	for path, name := range map[string]string{
+		"/api/v1/identity-providers/" + identityProvider.ID: "identity provider",
+		"/api/v1/ldap/providers/" + ldapProvider.ID:         "LDAP provider",
+		"/api/v1/groups/" + group.ID:                        "group",
+		"/api/v1/roles/" + role.ID:                          "role",
+	} {
+		if resp := doJSON(t, http.MethodDelete, path, credential, nil, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("delete %s: %d", name, resp.StatusCode)
+		}
+	}
+}
+
 func TestEndToEnd(t *testing.T) {
 	// 1. Health and discovery.
 	if resp := doJSON(t, "GET", "/health/ready", "", nil, nil); resp.StatusCode != 200 {
@@ -490,6 +574,7 @@ func TestEndToEnd(t *testing.T) {
 	if activateResp.StatusCode != http.StatusOK || len(activation.RecoveryCodes) == 0 {
 		t.Fatalf("mfa activate: %d %+v", activateResp.StatusCode, activation)
 	}
+	administrativeCRUDEndToEnd(t, admin.credential())
 
 	// 4. Create a confidential OAuth client (skip_consent for a headless flow).
 	var created struct {
@@ -862,5 +947,61 @@ func TestConcurrentBlockWithSessionAndRefreshIssuance(t *testing.T) {
 	}
 	if _, err := oauthRepo.CreateRefreshToken(context.Background(), oauth.RefreshToken{TokenHash: "refresh-after-block-" + userID.String(), FamilyID: uuid.New(), UserID: userID, ClientID: "test-app", ExpiresAt: time.Now().Add(time.Hour)}); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("refresh issuance after block must fail closed: %v", err)
+	}
+}
+
+func TestMigrationUpDownRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	databaseName := "sso_migrations_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	parsed, err := url.Parse(testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminURL := *parsed
+	adminURL.Path = "/postgres"
+	admin, err := pgx.Connect(ctx, adminURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(ctx)
+	identifier := pgx.Identifier{databaseName}.Sanitize()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+identifier); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = admin.Exec(ctx, "DROP DATABASE "+identifier+" WITH (FORCE)") }()
+
+	testURL := *parsed
+	testURL.Path = "/" + databaseName
+	if err := dbmigrate.Up(testURL.String()); err != nil {
+		t.Fatalf("up migrations: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, testURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dbmigrate.CheckSchema(ctx, pool); err != nil {
+		pool.Close()
+		t.Fatalf("schema after up: %v", err)
+	}
+	pool.Close()
+
+	if err := dbmigrate.Down(testURL.String()); err != nil {
+		t.Fatalf("down migrations: %v", err)
+	}
+	conn, err := pgx.Connect(ctx, testURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var usersTable *string
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.users')::text`).Scan(&usersTable); err != nil {
+		conn.Close(ctx)
+		t.Fatal(err)
+	}
+	conn.Close(ctx)
+	if usersTable != nil {
+		t.Fatalf("down migrations оставили таблицу users: %s", *usersTable)
+	}
+	if err := dbmigrate.Up(testURL.String()); err != nil {
+		t.Fatalf("повторный up после down: %v", err)
 	}
 }

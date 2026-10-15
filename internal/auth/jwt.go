@@ -79,7 +79,7 @@ func BearerAuth(verifier AccessTokenVerifier, revocations TokenChecker) func(htt
 					httpx.Error(w, http.StatusUnauthorized, "account is not active")
 					return
 				}
-				if invalidBefore != nil && (claims.IssuedAt == nil || !claims.IssuedAt.Time.After(*invalidBefore)) {
+				if invalidBefore != nil && (claims.IssuedAt == nil || !claims.IssuedAt.After(*invalidBefore)) {
 					httpx.Error(w, http.StatusUnauthorized, "token revoked")
 					return
 				}

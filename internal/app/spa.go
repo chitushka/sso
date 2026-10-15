@@ -3,34 +3,53 @@ package app
 import (
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 )
 
 const spaDist = "web/admin/dist"
 
-// registerSPA serves the built admin UI. Any path not claimed by the API
-// falls back to index.html so Vue Router handles it client-side. If the dist
-// directory is absent (API-only build), the server runs without a UI.
+// registerSPA раздаёт собранный административный интерфейс. Не занятые API
+// маршруты возвращают index.html для обработки во Vue Router. Если каталог
+// сборки отсутствует, сервер продолжает работать только с API.
 func registerSPA(r chi.Router, logger *slog.Logger) {
-	if _, err := os.Stat(filepath.Join(spaDist, "index.html")); err != nil {
+	root := http.Dir(spaDist)
+	if !isSPAFile(root, "/index.html") {
 		logger.Info("admin ui not found, serving API only", "dir", spaDist)
 		return
 	}
-	fs := http.FileServer(http.Dir(spaDist))
+	fs := http.FileServer(root)
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet && req.Method != http.MethodHead {
 			http.NotFound(w, req)
 			return
 		}
-		p := filepath.Join(spaDist, filepath.Clean("/"+req.URL.Path))
-		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+		if isSPAFile(root, req.URL.Path) {
 			fs.ServeHTTP(w, req)
 			return
 		}
-		http.ServeFile(w, req, filepath.Join(spaDist, "index.html"))
+		index, err := root.Open("/index.html")
+		if err != nil {
+			http.NotFound(w, req)
+			return
+		}
+		defer func() { _ = index.Close() }()
+		info, err := index.Stat()
+		if err != nil {
+			http.NotFound(w, req)
+			return
+		}
+		http.ServeContent(w, req, "index.html", info.ModTime(), index)
 	})
 	logger.Info("admin ui enabled", "dir", spaDist)
+}
+
+func isSPAFile(root http.Dir, requestPath string) bool {
+	file, err := root.Open(requestPath)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	return err == nil && !info.IsDir()
 }

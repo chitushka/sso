@@ -19,7 +19,7 @@ func (r *PostgresSessionRepository) Create(ctx context.Context, s Session) (Sess
 	if err != nil {
 		return s, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	var active bool
 	if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE id=$1 FOR UPDATE`, s.UserID).Scan(&active); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

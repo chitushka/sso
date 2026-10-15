@@ -135,7 +135,7 @@ func TestSafeHTTPClientDisablesProxyAndRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusFound || calls != 1 {
 		t.Fatalf("redirect был выполнен: status=%d calls=%d", resp.StatusCode, calls)
 	}

@@ -539,7 +539,7 @@ func (s *Service) Introspect(ctx context.Context, in IntrospectInput) (map[strin
 					return inactive, nil
 				}
 				active, invalidBefore, stateErr := s.users.AccessState(ctx, userID)
-				if stateErr != nil || !active || (invalidBefore != nil && (claims.IssuedAt == nil || !claims.IssuedAt.Time.After(*invalidBefore))) {
+				if stateErr != nil || !active || (invalidBefore != nil && (claims.IssuedAt == nil || !claims.IssuedAt.After(*invalidBefore))) {
 					return inactive, nil
 				}
 			}

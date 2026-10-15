@@ -118,7 +118,7 @@ func (r *PostgresRepository) CreateRefreshToken(ctx context.Context, t RefreshTo
 	if err != nil {
 		return RefreshToken{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	var active bool
 	if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE id=$1 FOR UPDATE`, t.UserID).Scan(&active); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
