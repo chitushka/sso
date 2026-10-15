@@ -25,6 +25,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 	})
 
 	r.Get("/oauth2/broker/{code}/login", func(w http.ResponseWriter, req *http.Request) {
+		httpx.NoStore(w)
 		cont := req.URL.Query().Get("continue")
 		if !safeContinue(cont) {
 			cont = "/" // only same-origin continue targets
@@ -42,6 +43,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 	})
 
 	r.Get("/oauth2/broker/{code}/callback", func(w http.ResponseWriter, req *http.Request) {
+		httpx.NoStore(w)
 		if e := req.URL.Query().Get("error"); e != "" {
 			http.Redirect(w, req, "/login?broker_error="+e, http.StatusFound)
 			return

@@ -9,6 +9,10 @@ package integration
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base32"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,6 +133,28 @@ func doJSON(t *testing.T, method, path, credential string, body any, out any) *h
 		}
 	}
 	return resp
+}
+
+func assertNoStore(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("%s %s: Cache-Control = %q, want no-store", resp.Request.Method, resp.Request.URL.Path, got)
+	}
+	if got := resp.Header.Get("Pragma"); got != "no-cache" {
+		t.Fatalf("%s %s: Pragma = %q, want no-cache", resp.Request.Method, resp.Request.URL.Path, got)
+	}
+}
+
+func currentTOTP(secret string) string {
+	key, _ := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
+	var counter [8]byte
+	binary.BigEndian.PutUint64(counter[:], uint64(time.Now().Unix()/30))
+	mac := hmac.New(sha1.New, key)
+	_, _ = mac.Write(counter[:])
+	sum := mac.Sum(nil)
+	offset := sum[len(sum)-1] & 0x0f
+	value := binary.BigEndian.Uint32(sum[offset:offset+4]) & 0x7fffffff
+	return fmt.Sprintf("%06d", value%1_000_000)
 }
 
 func loginSession(t *testing.T, username, password string) loginResult {
@@ -396,6 +422,7 @@ func TestEndToEnd(t *testing.T) {
 	if resp := doJSON(t, "POST", "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "SuperSecret123!"}, &admin); resp.StatusCode != 200 {
 		t.Fatalf("login failed: %d %+v", resp.StatusCode, admin)
 	} else {
+		assertNoStore(t, resp)
 		for _, cookie := range resp.Cookies() {
 			if cookie.Name == "sso_session" {
 				admin.SessionToken = cookie.Value
@@ -414,6 +441,22 @@ func TestEndToEnd(t *testing.T) {
 	if resp := doJSON(t, "GET", "/metrics", admin.credential(), nil, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("admin metrics request failed: %d", resp.StatusCode)
 	}
+	var enrollment struct {
+		Secret string `json:"secret"`
+	}
+	enrollResp := doJSON(t, http.MethodPost, "/api/v1/auth/mfa/enroll", admin.credential(), nil, &enrollment)
+	assertNoStore(t, enrollResp)
+	if enrollResp.StatusCode != http.StatusOK || enrollment.Secret == "" {
+		t.Fatalf("mfa enroll: %d %+v", enrollResp.StatusCode, enrollment)
+	}
+	var activation struct {
+		RecoveryCodes []string `json:"recovery_codes"`
+	}
+	activateResp := doJSON(t, http.MethodPost, "/api/v1/auth/mfa/activate", admin.credential(), map[string]string{"code": currentTOTP(enrollment.Secret)}, &activation)
+	assertNoStore(t, activateResp)
+	if activateResp.StatusCode != http.StatusOK || len(activation.RecoveryCodes) == 0 {
+		t.Fatalf("mfa activate: %d %+v", activateResp.StatusCode, activation)
+	}
 
 	// 4. Create a confidential OAuth client (skip_consent for a headless flow).
 	var created struct {
@@ -423,13 +466,24 @@ func TestEndToEnd(t *testing.T) {
 		} `json:"client"`
 		ClientSecret string `json:"client_secret"`
 	}
-	if resp := doJSON(t, "POST", "/api/v1/oauth/clients", admin.credential(), map[string]any{
+	createClientResp := doJSON(t, "POST", "/api/v1/oauth/clients", admin.credential(), map[string]any{
 		"client_id": "test-app", "name": "Test App", "type": "confidential",
 		"redirect_uris": []string{"https://client.example/cb"}, "allowed_scopes": []string{"openid", "profile", "email"},
 		"skip_consent": true, "enabled": true,
-	}, &created); resp.StatusCode != 201 || created.ClientSecret == "" {
-		t.Fatalf("create client: %d %+v", resp.StatusCode, created)
+	}, &created)
+	assertNoStore(t, createClientResp)
+	if createClientResp.StatusCode != 201 || created.ClientSecret == "" {
+		t.Fatalf("create client: %d %+v", createClientResp.StatusCode, created)
 	}
+	var rotated struct {
+		ClientSecret string `json:"client_secret"`
+	}
+	rotateResp := doJSON(t, http.MethodPost, "/api/v1/oauth/clients/"+created.Client.ID+"/rotate-secret", admin.credential(), nil, &rotated)
+	assertNoStore(t, rotateResp)
+	if rotateResp.StatusCode != http.StatusOK || rotated.ClientSecret == "" || rotated.ClientSecret == created.ClientSecret {
+		t.Fatalf("rotate client secret: %d %+v", rotateResp.StatusCode, rotated)
+	}
+	created.ClientSecret = rotated.ClientSecret
 
 	// 5. Authorization code flow with the session cookie.
 	q := url.Values{"response_type": {"code"}, "client_id": {"test-app"}, "redirect_uri": {"https://client.example/cb"}, "scope": {"openid profile"}, "state": {"xyz"}, "nonce": {"n1"}}
@@ -439,6 +493,7 @@ func TestEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertNoStore(t, resp)
 	resp.Body.Close()
 	if resp.StatusCode != 302 {
 		t.Fatalf("authorize: %d", resp.StatusCode)
@@ -455,6 +510,7 @@ func TestEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		assertNoStore(t, res)
 		defer res.Body.Close()
 		var m map[string]any
 		_ = json.NewDecoder(res.Body).Decode(&m)
@@ -556,6 +612,7 @@ func TestEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		assertNoStore(t, res)
 		defer res.Body.Close()
 		var body map[string]any
 		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {

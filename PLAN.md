@@ -4,13 +4,6 @@
 
 ## P1 — незавершённые сценарии и целостность
 
-### Запретить кэширование секретных ответов
-
-Token endpoint и ответы с одноразовыми секретами не устанавливают обязательные `Cache-Control: no-store` и `Pragma: no-cache`.
-
-- Добавить заголовки для OAuth token/introspection, создания и ротации client secret, MFA enrollment/recovery codes и других ответов с credentials.
-- Проверить заголовки автоматическими handler/integration-тестами.
-
 ### Ограничить память и стоимость локального rate limiter
 
 `TokenBucketLimiter` допускает рост map свыше 10 000 активных ключей и после порога выполняет O(n)-обход при добавлении каждого нового IP. Распределённая атака способна вызвать рост памяти и CPU.
@@ -24,7 +17,7 @@ Token endpoint и ответы с одноразовыми секретами н
 
 ### Расширить автоматические проверки
 
-Пакеты `account`, `rbac`, `users`, `mailer`, `health` и `app` не имеют unit-тестов. Единственный integration-тест не покрывает pending activation, блокировку/разблокировку, broker callback, LDAP timeout, no-store headers и большинство административных CRUD.
+Пакеты `account`, `rbac`, `users`, `mailer`, `health` и `app` не имеют unit-тестов. Интеграционный тест пока не покрывает broker callback, LDAP timeout и большинство административных CRUD.
 
 - Добавить тесты перечисленных сценариев и up/down-миграций на реальном PostgreSQL.
 - Добавить в CI `govulncheck ./...` и race-тесты в Linux-окружении с CGO.

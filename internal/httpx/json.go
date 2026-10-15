@@ -11,6 +11,13 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+// NoStore запрещает промежуточным узлам и браузеру сохранять ответ с
+// учётными данными или другим одноразовым секретом.
+func NoStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+}
+
 func JSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

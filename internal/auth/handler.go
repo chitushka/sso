@@ -19,6 +19,7 @@ type loginRequest struct {
 func RegisterRoutes(r chi.Router, svc *Service, userRepo users.Repository, sessions SessionBrowser, verifier AccessTokenVerifier, revocations TokenChecker) {
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		r.Post("/login", func(w http.ResponseWriter, r *http.Request) {
+			httpx.NoStore(w)
 			var req loginRequest
 			if err := httpx.Decode(r, &req); err != nil {
 				httpx.Error(w, 400, "invalid json body")

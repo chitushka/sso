@@ -1,10 +1,24 @@
 package httpx
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestNoStoreSetsRequiredHeaders(t *testing.T) {
+	w := httptest.NewRecorder()
+	NoStore(w)
+
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if got := w.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("Pragma = %q, want no-cache", got)
+	}
+	w.WriteHeader(http.StatusOK)
+}
 
 func TestDecodeRejectsTrailingJSON(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader("{\"name\":\"first\"} {\"name\":\"second\"}"))

@@ -107,6 +107,7 @@ func RegisterRoutes(r chi.Router, svc *Service, authSvc *auth.Service, bearerAut
 
 	r.Route("/api/v1/auth/mfa", func(r chi.Router) {
 		r.With(bearerAuth).Post("/enroll", func(w http.ResponseWriter, req *http.Request) {
+			httpx.NoStore(w)
 			userID, ok := currentUser(w, req)
 			if !ok {
 				return
@@ -123,6 +124,7 @@ func RegisterRoutes(r chi.Router, svc *Service, authSvc *auth.Service, bearerAut
 			httpx.JSON(w, 200, out)
 		})
 		r.With(bearerAuth).Post("/activate", func(w http.ResponseWriter, req *http.Request) {
+			httpx.NoStore(w)
 			userID, ok := currentUser(w, req)
 			if !ok {
 				return
@@ -172,6 +174,7 @@ func RegisterRoutes(r chi.Router, svc *Service, authSvc *auth.Service, bearerAut
 			httpx.JSON(w, 200, map[string]string{"status": "mfa_disabled"})
 		})
 		r.Post("/verify", func(w http.ResponseWriter, req *http.Request) {
+			httpx.NoStore(w)
 			var body struct {
 				MFAToken string `json:"mfa_token"`
 				Code     string `json:"code"`

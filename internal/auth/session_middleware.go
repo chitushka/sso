@@ -78,6 +78,7 @@ func ValidCSRF(r *http.Request) bool {
 }
 
 func SetSessionCookies(w http.ResponseWriter, r *http.Request, result LoginResult) error {
+	httpx.NoStore(w)
 	csrf, _, err := NewSessionToken()
 	if err != nil {
 		return err

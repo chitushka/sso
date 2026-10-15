@@ -20,6 +20,21 @@ func (r cookieSessions) FindByTokenHash(context.Context, string) (Session, error
 func (r cookieSessions) RevokeByTokenHash(context.Context, string) error  { return nil }
 func (r cookieSessions) RevokeAllByUser(context.Context, uuid.UUID) error { return nil }
 
+func TestSetSessionCookiesDisablesCaching(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	w := httptest.NewRecorder()
+	result := LoginResult{SessionToken: "opaque", SessionExpiresAt: time.Now().Add(time.Hour)}
+	if err := SetSessionCookies(w, req, result); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if got := w.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("Pragma = %q, want no-cache", got)
+	}
+}
+
 func TestProtectedAuthCookieRequiresCSRFForWrites(t *testing.T) {
 	userID := uuid.New()
 	userRepo := &memUsers{u: users.User{ID: userID, Username: "admin", Status: users.StatusActive}}

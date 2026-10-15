@@ -69,6 +69,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			httpx.JSON(w, 200, out)
 		})
 		r.With(require("oauth_clients", "create")).Post("/", func(w http.ResponseWriter, r *http.Request) {
+			httpx.NoStore(w)
 			var req CreateClientInput
 			if err := httpx.Decode(r, &req); err != nil {
 				httpx.Error(w, 400, "invalid json body")
@@ -129,6 +130,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			httpx.JSON(w, 200, out)
 		})
 		r.With(require("oauth_clients", "update")).Post("/{id}/rotate-secret", func(w http.ResponseWriter, r *http.Request) {
+			httpx.NoStore(w)
 			id, err := uuid.Parse(chi.URLParam(r, "id"))
 			if err != nil {
 				httpx.Error(w, 400, "invalid id")
@@ -163,6 +165,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 		})
 	})
 	r.Get("/oauth2/authorize", func(w http.ResponseWriter, r *http.Request) {
+		httpx.NoStore(w)
 		out, err := svc.Authorize(r.Context(), AuthorizeInput{ResponseType: r.URL.Query().Get("response_type"), ClientID: r.URL.Query().Get("client_id"), RedirectURI: r.URL.Query().Get("redirect_uri"), Scope: r.URL.Query().Get("scope"), State: r.URL.Query().Get("state"), CodeChallenge: r.URL.Query().Get("code_challenge"), CodeChallengeMethod: r.URL.Query().Get("code_challenge_method"), Nonce: r.URL.Query().Get("nonce"), SessionToken: sessionCookie(r)})
 		if err != nil {
 			switch {
@@ -239,6 +242,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 		httpx.JSON(w, 200, map[string]string{"status": "granted"})
 	})
 	r.Post("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		httpx.NoStore(w)
 		if err := r.ParseForm(); err != nil {
 			httpx.Error(w, 400, "invalid form")
 			return
@@ -265,6 +269,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 		w.WriteHeader(http.StatusOK)
 	})
 	r.Post("/oauth2/introspect", func(w http.ResponseWriter, r *http.Request) {
+		httpx.NoStore(w)
 		if err := r.ParseForm(); err != nil {
 			oauthError(w, 400, "invalid_request", "invalid form")
 			return
