@@ -280,6 +280,49 @@ func concurrentBrokerResolution(t *testing.T) {
 	}
 }
 
+func transactionalSecurityAudit(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	_, err = pool.Exec(ctx, `CREATE FUNCTION reject_test_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'forced audit failure'; END $$;
+		CREATE TRIGGER reject_test_audit BEFORE INSERT ON audit_logs
+		FOR EACH ROW EXECUTE FUNCTION reject_test_audit()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(ctx, `DROP TRIGGER IF EXISTS reject_test_audit ON audit_logs; DROP FUNCTION IF EXISTS reject_test_audit()`)
+	}()
+
+	repo := users.NewPostgresRepository(pool)
+	hash := "test-password-hash"
+	candidate := users.User{Username: "audit-rollback", Email: "audit-rollback@example.org", PasswordHash: &hash, Status: users.StatusActive, Source: users.SourceLocal}
+	if _, err := repo.Create(ctx, candidate); err == nil {
+		t.Fatal("мутация не откатилась при ошибке обязательного аудита")
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE username=$1`, candidate.Username).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("после ошибки аудита сохранён пользователь: count=%d err=%v", count, err)
+	}
+	if _, err := pool.Exec(ctx, `DROP TRIGGER reject_test_audit ON audit_logs`); err != nil {
+		t.Fatal(err)
+	}
+	created, err := repo.Create(ctx, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE username=$1`, candidate.Username).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("повтор создал неверное число пользователей: count=%d err=%v", count, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action='security.users.insert' AND target_id=$1`, created.ID.String()).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("обязательное событие аудита отсутствует или продублировано: count=%d err=%v", count, err)
+	}
+}
+
 func TestEndToEnd(t *testing.T) {
 	// 1. Health and discovery.
 	if resp := doJSON(t, "GET", "/health/ready", "", nil, nil); resp.StatusCode != 200 {
@@ -316,6 +359,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	pendingActivationEndToEnd(t)
 	concurrentBrokerResolution(t)
+	transactionalSecurityAudit(t)
 
 	// An LDAP identity may not attach itself to the existing local admin by
 	// presenting the same mutable username.

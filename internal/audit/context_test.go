@@ -38,7 +38,7 @@ func TestWriteEnrichesEventFromRequestContext(t *testing.T) {
 	}
 }
 
-func TestWritePreservesExplicitMetadataAndReturnsRepositoryError(t *testing.T) {
+func TestWritePreservesExplicitMetadataAndIgnoresTelemetryError(t *testing.T) {
 	requestActor := uuid.New()
 	explicitActor := uuid.New()
 	wantErr := errors.New("audit unavailable")
@@ -51,8 +51,8 @@ func TestWritePreservesExplicitMetadataAndReturnsRepositoryError(t *testing.T) {
 		UserAgent:   "explicit-agent",
 	})
 
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("expected repository error, got %v", err)
+	if err != nil {
+		t.Fatalf("ошибка best-effort телеметрии не должна влиять на операцию: %v", err)
 	}
 	if repo.event.ActorUserID == nil || *repo.event.ActorUserID != explicitActor || repo.event.IP != "198.51.100.20" || repo.event.UserAgent != "explicit-agent" {
 		t.Fatalf("explicit metadata was overwritten: %+v", repo.event)

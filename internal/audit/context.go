@@ -24,7 +24,9 @@ func WithRequestContext(ctx context.Context, actorUserID uuid.UUID, ip, userAgen
 	})
 }
 
-// Write enriches missing fields from the request context before persisting.
+// Write сохраняет расширенную телеметрию по возможности. Ошибка этого канала
+// не должна менять результат уже выполненной операции: обязательный security-аудит
+// создаётся PostgreSQL-триггерами в транзакции с самой мутацией.
 func Write(ctx context.Context, repo Repository, event Event) error {
 	request, _ := ctx.Value(requestContextKey{}).(RequestContext)
 	if event.ActorUserID == nil && request.ActorUserID != uuid.Nil {
@@ -37,5 +39,6 @@ func Write(ctx context.Context, repo Repository, event Event) error {
 	if event.UserAgent == "" {
 		event.UserAgent = request.UserAgent
 	}
-	return repo.Write(ctx, event)
+	_ = repo.Write(ctx, event)
+	return nil
 }
