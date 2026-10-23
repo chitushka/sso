@@ -19,7 +19,7 @@
 
 ## Стек
 
-- Go 1.26.9, образ сборщика `golang:1.26.9-alpine`;
+- Go 1.26.10, образ сборщика `golang:1.26.10-alpine`;
 - PostgreSQL;
 - Vue 3, JavaScript, Vite 8, Bootstrap 5, Pinia 4, Vue Router 5 и Axios;
 - Docker и Docker Compose.
@@ -314,7 +314,7 @@ https://sso.example.com/oauth2/logout
 make quality
 ```
 
-Команда собирает образ на Go 1.26.9 с закреплёнными версиями `govulncheck` и `golangci-lint`, затем проверяет форматирование, выполняет `go vet`, unit-тесты, race-тесты с CGO, поиск известных уязвимостей и lint. Перед запуском всё равно форматируйте изменённые Go-файлы командой `gofmt -w` и проверяйте патч через `git diff --check`.
+Команда собирает образ на Go 1.26.10 с закреплёнными версиями `govulncheck` и `golangci-lint`, затем проверяет форматирование, выполняет `go vet`, unit-тесты, race-тесты с CGO, поиск известных уязвимостей и lint. Перед запуском всё равно форматируйте изменённые Go-файлы командой `gofmt -w` и проверяйте патч через `git diff --check`.
 
 Интеграционные тесты находятся в `internal/integration`, используют build tag `integration` и требуют отдельную базу PostgreSQL:
 
