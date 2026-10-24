@@ -19,7 +19,7 @@
 
 ## Стек
 
-- Go 1.26.10, образ сборщика `golang:1.26.10-alpine`;
+- Go 1.26.10, образ сборщика `golang:1.26.10-alpine`; ветка Go 1.26 зафиксирована для разработки и не должна заменяться другой minor- или major-версией;
 - PostgreSQL;
 - Vue 3, JavaScript, Vite 8, Bootstrap 5, Pinia 4, Vue Router 5 и Axios;
 - Docker и Docker Compose.
