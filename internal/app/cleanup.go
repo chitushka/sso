@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// startCleanup purges expired auth artifacts hourly so the tables do not grow
-// without bound. Retention windows keep recent rows for audit/debugging.
+// startCleanup ежечасно удаляет устаревшие данные аутентификации, чтобы таблицы
+// не росли бесконечно. Окна хранения сохраняют недавние записи для аудита и диагностики.
 func startCleanup(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) {
 	statements := []string{
 		`DELETE FROM sessions WHERE expires_at < now() - interval '24 hours' OR (revoked_at IS NOT NULL AND revoked_at < now() - interval '24 hours')`,
@@ -18,6 +18,7 @@ func startCleanup(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) 
 		`DELETE FROM one_time_tokens WHERE expires_at < now() - interval '7 days' OR (used_at IS NOT NULL AND used_at < now() - interval '7 days')`,
 		`DELETE FROM login_attempts WHERE updated_at < now() - interval '24 hours'`,
 		`DELETE FROM rate_limit_buckets WHERE expires_at < now()`,
+		`DELETE FROM broker_login_states WHERE expires_at < now()`,
 	}
 	run := func() {
 		for _, q := range statements {

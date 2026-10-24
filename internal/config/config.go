@@ -37,7 +37,6 @@ type DatabaseConfig struct {
 }
 
 type SecurityConfig struct {
-	JWTSecret     string
 	EncryptionKey string
 }
 
@@ -114,7 +113,6 @@ func Load() (Config, error) {
 			MigrateOnStart: boolean("SSO_MIGRATE_ON_START", false),
 		},
 		Security: SecurityConfig{
-			JWTSecret:     os.Getenv("SSO_JWT_SECRET"),
 			EncryptionKey: os.Getenv("SSO_ENCRYPTION_KEY"),
 		},
 		Token: TokenConfig{
@@ -163,12 +161,6 @@ func (c Config) Validate() error {
 	} else if databaseErr != nil || databaseURL.Host == "" || (databaseURL.Scheme != "postgres" && databaseURL.Scheme != "postgresql") {
 		errs = append(errs, errors.New("SSO_DATABASE_URL must be an absolute PostgreSQL URL"))
 	}
-	if strings.TrimSpace(c.Security.JWTSecret) == "" {
-		errs = append(errs, errors.New("SSO_JWT_SECRET is required"))
-	}
-	if len(c.Security.JWTSecret) > 0 && len(c.Security.JWTSecret) < 32 {
-		errs = append(errs, errors.New("SSO_JWT_SECRET must be at least 32 characters"))
-	}
 	if strings.TrimSpace(c.Security.EncryptionKey) == "" {
 		errs = append(errs, errors.New("SSO_ENCRYPTION_KEY is required"))
 	}
@@ -187,11 +179,6 @@ func (c Config) Validate() error {
 	if c.Token.RefreshTTL <= 0 {
 		errs = append(errs, errors.New("SSO_REFRESH_TOKEN_TTL must be positive"))
 	}
-
-	if c.Security.JWTSecret != "" && c.Security.JWTSecret == c.Security.EncryptionKey {
-		errs = append(errs, errors.New("SSO_JWT_SECRET and SSO_ENCRYPTION_KEY must be different"))
-	}
-
 	production := !isDevelopment(c.Env)
 	issuer, issuerErr := url.Parse(c.OIDC.Issuer)
 	if issuerErr != nil || !issuer.IsAbs() || issuer.Host == "" || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" {
@@ -203,8 +190,8 @@ func (c Config) Validate() error {
 	}
 
 	if production {
-		if strings.Contains(strings.ToLower(c.Security.JWTSecret), "change-me") || strings.Contains(strings.ToLower(c.Security.EncryptionKey), "change-me") {
-			errs = append(errs, errors.New("placeholder secrets are forbidden outside development"))
+		if strings.Contains(strings.ToLower(c.Security.EncryptionKey), "change-me") {
+			errs = append(errs, errors.New("placeholder encryption key is forbidden outside development"))
 		}
 		if databaseErr == nil {
 			switch strings.ToLower(databaseURL.Query().Get("sslmode")) {

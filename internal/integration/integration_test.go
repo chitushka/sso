@@ -1,9 +1,9 @@
 //go:build integration
 
-// Package integration exercises the whole server against a real PostgreSQL:
-// migrations, bootstrap, login, OAuth2 code flow with refresh rotation and
-// RBAC enforcement. Requires SSO_TEST_DATABASE_URL; the schema is dropped and
-// recreated, so point it at a throwaway database only.
+// Package integration проверяет весь сервер с настоящим PostgreSQL: миграции,
+// bootstrap, вход, OAuth2 code flow с ротацией refresh-токенов и RBAC.
+// Требуется SSO_TEST_DATABASE_URL; схема пересоздаётся, поэтому используйте только
+// одноразовую тестовую базу данных.
 package integration
 
 import (
@@ -41,6 +41,7 @@ import (
 	"github.com/chitushka/sso/internal/secrets"
 	"github.com/chitushka/sso/internal/storage"
 	"github.com/chitushka/sso/internal/users"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -80,7 +81,7 @@ func TestMain(m *testing.M) {
 	cfg := config.Config{
 		Env:      "test",
 		Database: config.DatabaseConfig{URL: dbURL, MigrateOnStart: true},
-		Security: config.SecurityConfig{JWTSecret: "integration-test-jwt-secret-32chars!", EncryptionKey: "integration-test-enc-key-32chars-ok!"},
+		Security: config.SecurityConfig{EncryptionKey: "integration-test-enc-key-32chars-ok!"},
 		Token:    config.TokenConfig{AccessTTL: 15 * time.Minute, SessionTTL: time.Hour, RefreshTTL: time.Hour},
 		CORS:     config.CORSConfig{AllowedOrigins: []string{"http://localhost"}},
 		OIDC:     config.OIDCConfig{Issuer: "http://localhost:8080"},
@@ -307,6 +308,68 @@ func concurrentBrokerResolution(t *testing.T) {
 	if usersCount != 1 || identitiesCount != 1 {
 		t.Fatalf("нарушена уникальность: users=%d identities=%d", usersCount, identitiesCount)
 	}
+
+	stateHash := bytes.Repeat([]byte{0x42}, 32)
+	if err := repo.CreateLoginState(ctx, broker.LoginState{
+		StateHash: stateHash, ProviderCode: provider.Code, ContinueURL: "/users", ExpiresAt: time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	consumeStart := make(chan struct{})
+	consumeErrors := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-consumeStart
+			_, consumeErr := repo.ConsumeLoginState(ctx, stateHash, provider.Code)
+			consumeErrors <- consumeErr
+		}()
+	}
+	close(consumeStart)
+	successes, replays := 0, 0
+	for range 2 {
+		switch consumeErr := <-consumeErrors; {
+		case consumeErr == nil:
+			successes++
+		case errors.Is(consumeErr, storage.ErrNotFound):
+			replays++
+		default:
+			t.Fatal(consumeErr)
+		}
+	}
+	if successes != 1 || replays != 1 {
+		t.Fatalf("state потреблён неатомарно: successes=%d replays=%d", successes, replays)
+	}
+
+	expiredHash := bytes.Repeat([]byte{0x43}, 32)
+	if err := repo.CreateLoginState(ctx, broker.LoginState{
+		StateHash: expiredHash, ProviderCode: provider.Code, ContinueURL: "/users", ExpiresAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ConsumeLoginState(ctx, expiredHash, provider.Code); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("истёкший state принят: %v", err)
+	}
+
+	rawCrossBrowserState := "cross-browser-state"
+	crossBrowserHash := sha256.Sum256([]byte(rawCrossBrowserState))
+	if err := repo.CreateLoginState(ctx, broker.LoginState{
+		StateHash: crossBrowserHash[:], ProviderCode: provider.Code, ContinueURL: "/users", ExpiresAt: time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	passthrough := func(next http.Handler) http.Handler { return next }
+	require := func(string, string) func(http.Handler) http.Handler { return passthrough }
+	broker.RegisterRoutes(router, broker.NewService(repo, nil, nil, "http://localhost:8080"), passthrough, require)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/oauth2/broker/"+provider.Code+"/callback?state="+rawCrossBrowserState+"&code=code", nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusFound || response.Header().Get("Location") != "/login?broker_error=failed" {
+		t.Fatalf("cross-browser callback принят: status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+	if _, err := repo.ConsumeLoginState(ctx, crossBrowserHash[:], provider.Code); err != nil {
+		t.Fatalf("cross-browser callback ошибочно потребил state: %v", err)
+	}
 }
 
 func transactionalSecurityAudit(t *testing.T) {
@@ -479,7 +542,7 @@ func administrativeCRUDEndToEnd(t *testing.T, credential string) {
 }
 
 func TestEndToEnd(t *testing.T) {
-	// 1. Health and discovery.
+	// 1. Проверка health и discovery.
 	if resp := doJSON(t, "GET", "/health/ready", "", nil, nil); resp.StatusCode != 200 {
 		t.Fatalf("health: %d", resp.StatusCode)
 	}
@@ -491,7 +554,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("discovery failed: %d %v", resp.StatusCode, disco)
 	}
 
-	// 2. Concurrent bootstrap attempts: exactly one transaction may win.
+	// 2. При конкурентном bootstrap успешно завершается ровно одна транзакция.
 	bootstrapBody, _ := json.Marshal(map[string]string{"username": "admin", "email": "admin@example.org", "password": "SuperSecret123!"})
 	statuses := make(chan int, 2)
 	for range 2 {
@@ -517,8 +580,8 @@ func TestEndToEnd(t *testing.T) {
 	transactionalSecurityAudit(t)
 	sharedRateLimiterEndToEnd(t)
 
-	// An LDAP identity may not attach itself to the existing local admin by
-	// presenting the same mutable username.
+	// LDAP-идентификатор не может привязаться к локальному администратору,
+	// предъявив совпадающее изменяемое имя пользователя.
 	pool, err := pgxpool.New(context.Background(), testDatabaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -547,7 +610,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("local admin identity changed after LDAP collision: %+v %v", localAdmin, err)
 	}
 
-	// 3. Login as admin.
+	// 3. Вход от имени администратора.
 	var admin loginResult
 	if resp := doJSON(t, "POST", "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "SuperSecret123!"}, &admin); resp.StatusCode != 200 {
 		t.Fatalf("login failed: %d %+v", resp.StatusCode, admin)
@@ -589,7 +652,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	administrativeCRUDEndToEnd(t, admin.credential())
 
-	// 4. Create a confidential OAuth client (skip_consent for a headless flow).
+	// 4. Создание конфиденциального OAuth-клиента с skip_consent для headless flow.
 	var created struct {
 		Client struct {
 			ID       string `json:"id"`
@@ -616,7 +679,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	created.ClientSecret = rotated.ClientSecret
 
-	// 5. Authorization code flow with the session cookie.
+	// 5. Authorization Code Flow с session cookie.
 	q := url.Values{"response_type": {"code"}, "client_id": {"test-app"}, "redirect_uri": {"https://client.example/cb"}, "scope": {"openid profile"}, "state": {"xyz"}, "nonce": {"n1"}}
 	req, _ := http.NewRequest("GET", server.URL+"/oauth2/authorize?"+q.Encode(), nil)
 	req.AddCookie(&http.Cookie{Name: "sso_session", Value: admin.SessionToken})
@@ -635,7 +698,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	code := loc.Query().Get("code")
 
-	// 6. Exchange the code, then rotate the refresh token.
+	// 6. Обмен кода и последующая ротация refresh-токена.
 	tokenReq := func(form url.Values) (int, map[string]any) {
 		res, err := client.PostForm(server.URL+"/oauth2/token", form)
 		if err != nil {
@@ -656,7 +719,7 @@ func TestEndToEnd(t *testing.T) {
 	if status != 200 || tok2["refresh_token"] == firstRefresh {
 		t.Fatalf("refresh rotation: %d %v", status, tok2)
 	}
-	// Reuse of the rotated token must be rejected and revoke the family.
+	// Повторное использование заменённого токена отклоняется и отзывает всё семейство.
 	if status, _ := tokenReq(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {firstRefresh}, "client_id": {"test-app"}, "client_secret": {created.ClientSecret}}); status != 400 {
 		t.Fatalf("refresh reuse must 400, got %d", status)
 	}
@@ -664,7 +727,7 @@ func TestEndToEnd(t *testing.T) {
 	if status, _ := tokenReq(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {secondRefresh}, "client_id": {"test-app"}, "client_secret": {created.ClientSecret}}); status != 400 {
 		t.Fatalf("family member must be revoked after reuse, got %d", status)
 	}
-	// Wrong client secret is rejected with 401.
+	// Неверный секрет клиента отклоняется с кодом 401.
 	if status, _ := tokenReq(url.Values{"grant_type": {"client_credentials"}, "scope": {"profile"}, "client_id": {"test-app"}, "client_secret": {"wrong"}}); status != 401 {
 		t.Fatalf("wrong secret must 401, got %d", status)
 	}
@@ -780,7 +843,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("deleted user restoration through update must return 409, got %d", resp.StatusCode)
 	}
 
-	// 9. RBAC: a plain user has no admin permissions.
+	// 9. RBAC: обычный пользователь не имеет административных разрешений.
 	if resp := doJSON(t, "POST", "/api/v1/users", admin.credential(), map[string]string{"username": "bob", "email": "bob@example.org", "password": "BobPassword1!"}, nil); resp.StatusCode != 201 {
 		t.Fatalf("create user: %d", resp.StatusCode)
 	}
@@ -804,8 +867,8 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("admin must list users, got %d", resp.StatusCode)
 	}
 
-	// 10. Two instances racing to rotate an old signing key must commit exactly
-	// one replacement and keep exactly one active key.
+	// 10. При конкурентной ротации старого ключа двумя экземплярами фиксируется
+	// ровно одна замена и остаётся ровно один активный ключ.
 	if _, err := pool.Exec(context.Background(), `UPDATE oidc_signing_keys SET created_at=now()-interval '31 days' WHERE status='active'`); err != nil {
 		t.Fatal(err)
 	}
@@ -838,8 +901,8 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("concurrent rotation left active=%d published=%d", activeKeys, publishedKeys)
 	}
 
-	// 11. Offline encryption-key rotation re-encrypts every secret class and
-	// rejects the old key afterwards.
+	// 11. Офлайн-ротация ключа шифрования повторно шифрует все виды секретов,
+	// после чего старый ключ отклоняется.
 	mfaCiphertext, err := oldEncryptor.Encrypt("mfa-seed")
 	if err != nil {
 		t.Fatal(err)
@@ -880,7 +943,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
-	// 12. Migrations are idempotent on restart (MigrateOnStart with no changes).
+	// 12. Повторный запуск миграций без изменений идемпотентен.
 	if !strings.Contains(server.URL, "http://") {
 		t.Fatal("sanity")
 	}

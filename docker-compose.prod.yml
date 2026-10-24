@@ -17,8 +17,7 @@ services:
       SSO_ENV: production
       SSO_HTTP_ADDR: :8080
       SSO_DATABASE_URL: ${SSO_DATABASE_URL:?Set a PostgreSQL URL with sslmode=require, verify-ca, or verify-full}
-      SSO_JWT_SECRET: ${SSO_JWT_SECRET:?Set a random secret of at least 32 characters}
-      SSO_ENCRYPTION_KEY: ${SSO_ENCRYPTION_KEY:?Set an independent random key of at least 32 characters}
+      SSO_ENCRYPTION_KEY: ${SSO_ENCRYPTION_KEY:?Set a random key of at least 32 characters}
       SSO_ACCESS_TOKEN_TTL: ${SSO_ACCESS_TOKEN_TTL:-15m}
       SSO_SESSION_TTL: ${SSO_SESSION_TTL:-720h}
       SSO_REFRESH_TOKEN_TTL: ${SSO_REFRESH_TOKEN_TTL:-720h}

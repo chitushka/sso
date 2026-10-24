@@ -48,9 +48,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 		return nil, err
 	}
 	userRepo := users.NewPostgresRepository(pool)
-	// Short-TTL cache in front of the per-request revocation check so BearerAuth
-	// does not hit the DB on every authenticated request; block and "sign out
-	// everywhere" bust it explicitly for immediate effect.
+	// Кэш с коротким TTL уменьшает число проверок отзыва в БД для BearerAuth.
+	// Блокировка и выход на всех устройствах явно сбрасывают его для немедленного эффекта.
 	accessCache := auth.NewCachedTokenChecker(userRepo, auth.AccessCacheTTL)
 	sessionRepo := auth.NewPostgresSessionRepository(pool)
 	auditRepo := audit.NewPostgresRepository(pool)
@@ -112,8 +111,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	require := func(resource, action string) func(http.Handler) http.Handler {
 		return rbac.RequirePermission(rbacRepo, resource, action)
 	}
-	// One Bearer middleware for every protected router, sharing the access-state
-	// cache so blocks and "sign out everywhere" are honoured consistently.
+	// Все защищённые маршруты используют единый Bearer middleware и общий кэш
+	// состояния доступа, поэтому блокировка и выход применяются согласованно.
 	bearer := auth.ProtectedAuth(tokens, sessionRepo, userRepo, accessCache)
 	r.With(bearer, require("metrics", "read")).Get("/metrics", metrics.Expose)
 	bootstrap.RegisterRoutes(r, bootstrapSvc)
@@ -125,7 +124,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	audit.RegisterRoutes(r, auditRepo, bearer, require)
 	account.RegisterRoutes(r, accountSvc, authSvc, bearer)
 	brokerRepo := broker.NewPostgresRepository(pool, encryptor)
-	brokerSvc := broker.NewService(brokerRepo, authSvc, auditRepo, cfg.OIDC.Issuer, []byte(cfg.Security.JWTSecret))
+	brokerSvc := broker.NewService(brokerRepo, authSvc, auditRepo, cfg.OIDC.Issuer)
 	broker.RegisterRoutes(r, brokerSvc, bearer, require)
 	startCleanup(ctx, pool, logger)
 	registerSPA(r, logger)

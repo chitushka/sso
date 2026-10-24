@@ -95,7 +95,7 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d
 - используйте PostgreSQL с `sslmode=require`, `verify-ca` или предпочтительно `verify-full`;
 - подключайте LDAP через LDAPS или StartTLS;
 - храните секреты в хранилище оркестратора или защищённом env-файле;
-- используйте разные `SSO_JWT_SECRET` и `SSO_ENCRYPTION_KEY` длиной не менее 32 символов;
+- используйте случайный `SSO_ENCRYPTION_KEY` длиной не менее 32 символов;
 - настройте SMTP с STARTTLS и HTTPS issuer.
 
 `X-Forwarded-For` учитывается только от узлов из `SSO_TRUSTED_PROXIES`; после нормализации все обработчики читают IP только из `RemoteAddr`. Входящий `X-Request-ID` принимается лишь в безопасном ASCII-формате длиной до 64 символов, иначе сервер генерирует UUID. Встроенные миграции применяются при `SSO_MIGRATE_ON_START=true`; для поэтапного развёртывания применяйте файлы из `migrations/` отдельным заданием.
@@ -111,7 +111,6 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d
 | `SSO_DATABASE_URL` | да | Подключение PostgreSQL; в production нужен TLS |
 | `SSO_MIGRATE_ON_START` | нет | Применять миграции при запуске |
 | `SSO_TRUSTED_PROXIES` | нет | IP/CIDR доверенных proxy через запятую |
-| `SSO_JWT_SECRET` | да | HMAC-секрет состояния broker, не менее 32 символов |
 | `SSO_ENCRYPTION_KEY` | да | Ключ AES-256-GCM, не менее 32 символов |
 | `SSO_ACCESS_TOKEN_TTL` | нет | Срок access-токена, обычно `15m` |
 | `SSO_SESSION_TTL` | нет | Срок сессии, обычно `720h` |
@@ -124,7 +123,7 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d
 | `SSO_SMTP_FROM` | для SMTP | Адрес отправителя |
 | `SSO_SMTP_STARTTLS` | production | Должен быть `true` |
 
-Production-проверка отклоняет незашифрованный PostgreSQL, SMTP без STARTTLS, незащищённый LDAP, HTTP issuer, одинаковые или шаблонные секреты и отсутствующий SMTP.
+Production-проверка отклоняет незашифрованный PostgreSQL, SMTP без STARTTLS, незащищённый LDAP, HTTP issuer, шаблонный ключ шифрования и отсутствующий SMTP.
 
 ### Ротация `SSO_ENCRYPTION_KEY`
 
@@ -183,6 +182,7 @@ Access-токены RS256 содержат `kid`, `iss`, `aud`, `exp`, `iat` и 
 - TOTP соответствует RFC 6238; секрет зашифрован, коды восстановления хешируются.
 - Принятый TOTP-код нельзя использовать повторно.
 - Поиск, JIT provisioning и связывание внешнего subject выполняются одной транзакцией с блокировкой. Внешняя учётная запись связывается только по подтверждённому непустому email и не связывается автоматически с локальной записью с MFA. Для GitHub используется только primary verified email из `/user/emails`.
+- Состояние внешнего входа генерируется через `crypto/rand`, хранится на сервере только как SHA-256 и привязывается к браузеру через `HttpOnly`, `SameSite=Lax` cookie (`Secure` при HTTPS). Callback атомарно удаляет состояние из PostgreSQL; повторное, просроченное или полученное в другом браузере состояние отклоняется.
 - Серверные запросы identity broker и OIDC back-channel разрешены только к публичным IP-адресам: проверяются все DNS-ответы и фактический адрес соединения, proxy и redirects отключены. Внутренние, loopback, link-local, зарезервированные и IPv6-адреса с зоной отклоняются без настраиваемого обхода.
 - LDAP dial, TLS/StartTLS, bind и search ограничены единым тайм-аутом 10 секунд. Более короткий deadline входящего контекста имеет приоритет, а его отмена немедленно закрывает соединение и прерывает текущую LDAP-операцию.
 - LDAP bind password хранится только в зашифрованном виде и никогда не возвращается административным API; пустое значение при обновлении сохраняет существующий секрет.

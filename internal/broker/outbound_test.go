@@ -7,7 +7,7 @@ import (
 )
 
 func TestBrokerUsesSafeOutboundClient(t *testing.T) {
-	svc := NewService(nil, nil, nil, "https://sso.example.org", []byte("test-state-secret"))
+	svc := NewService(nil, nil, nil, "https://sso.example.org")
 	transport, ok := svc.client.Transport.(*http.Transport)
 	if !ok {
 		t.Fatal("неожиданный тип HTTP transport")

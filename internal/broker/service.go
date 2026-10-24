@@ -3,6 +3,8 @@ package broker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -23,29 +25,28 @@ var (
 	ErrProviderDisabled      = errors.New("identity provider is disabled")
 	ErrBrokerFailed          = errors.New("external authentication failed")
 	ErrVerifiedEmailRequired = errors.New("verified email is required for account provisioning")
-	// ErrLinkRequiresMFA is returned when a brokered login matches, by email, a
-	// local account that has MFA enabled. Auto-linking there would let the
-	// external IdP bypass the user's second factor, so linking must be manual.
+	// ErrLinkRequiresMFA возвращается, когда внешний вход по email совпал с локальной
+	// учётной записью с MFA. Автоматическая привязка позволила бы внешнему IdP
+	// обойти второй фактор, поэтому такую запись можно привязать только вручную.
 	ErrLinkRequiresMFA = errors.New("account has mfa enabled and must be linked manually")
 )
 
 type Service struct {
-	repo        Repository
-	auth        *auth.Service
-	audit       audit.Repository
-	issuer      string
-	stateSecret []byte
-	client      *http.Client
+	repo   Repository
+	auth   *auth.Service
+	audit  audit.Repository
+	issuer string
+	client *http.Client
 }
 
-func NewService(repo Repository, authSvc *auth.Service, aud audit.Repository, issuer string, stateSecret []byte) *Service {
+func NewService(repo Repository, authSvc *auth.Service, aud audit.Repository, issuer string) *Service {
 	client := netx.NewSafeHTTPClient(10 * time.Second)
-	return &Service{repo: repo, auth: authSvc, audit: aud, issuer: issuer, stateSecret: stateSecret, client: client}
+	return &Service{repo: repo, auth: authSvc, audit: aud, issuer: issuer, client: client}
 }
 
 func (s *Service) List(ctx context.Context) ([]Provider, error) { return s.repo.List(ctx) }
 
-// PublicProviders returns only what the login page needs.
+// PublicProviders возвращает только данные, необходимые странице входа.
 func (s *Service) PublicProviders(ctx context.Context) ([]map[string]string, error) {
 	all, err := s.repo.List(ctx)
 	if err != nil {
@@ -133,43 +134,70 @@ func (s *Service) callbackURL(code string) string {
 	return s.issuer + "/oauth2/broker/" + url.PathEscape(code) + "/callback"
 }
 
-// Start builds the external authorize redirect with a signed state.
-func (s *Service) Start(ctx context.Context, providerCode, continueURL string) (string, error) {
+const brokerStateTTL = 10 * time.Minute
+
+type StartResult struct {
+	Redirect  string
+	State     string
+	ExpiresAt time.Time
+}
+
+func newLoginState() (raw string, hash []byte, err error) {
+	value := make([]byte, 32)
+	if _, err = rand.Read(value); err != nil {
+		return "", nil, err
+	}
+	raw = base64.RawURLEncoding.EncodeToString(value)
+	digest := sha256.Sum256([]byte(raw))
+	return raw, digest[:], nil
+}
+
+func hashLoginState(raw string) []byte {
+	digest := sha256.Sum256([]byte(raw))
+	return digest[:]
+}
+
+// Start создаёт одноразовый state, сохраняет только его хеш и строит redirect
+// внешнего провайдера. Сам state дополнительно привязывается к браузеру cookie.
+func (s *Service) Start(ctx context.Context, providerCode, continueURL string) (StartResult, error) {
 	p, err := s.repo.FindByCode(ctx, providerCode)
 	if err != nil {
-		return "", err
+		return StartResult{}, err
 	}
 	if !p.Enabled {
-		return "", ErrProviderDisabled
+		return StartResult{}, ErrProviderDisabled
 	}
 	p = applyPreset(p)
-	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
-		return "", err
-	}
-	signed, err := signState(s.stateSecret, state{Provider: p.Code, Nonce: base64.RawURLEncoding.EncodeToString(nonce), Continue: continueURL, Exp: time.Now().Add(10 * time.Minute)})
-	if err != nil {
-		return "", err
-	}
 	u, err := url.Parse(p.AuthorizeURL)
 	if err != nil {
-		return "", err
+		return StartResult{}, err
+	}
+	rawState, stateHash, err := newLoginState()
+	if err != nil {
+		return StartResult{}, err
+	}
+	expiresAt := time.Now().Add(brokerStateTTL)
+	if err := s.repo.CreateLoginState(ctx, LoginState{StateHash: stateHash, ProviderCode: p.Code, ContinueURL: continueURL, ExpiresAt: expiresAt}); err != nil {
+		return StartResult{}, err
 	}
 	q := u.Query()
 	q.Set("response_type", "code")
 	q.Set("client_id", p.ClientID)
 	q.Set("redirect_uri", s.callbackURL(p.Code))
 	q.Set("scope", p.Scopes)
-	q.Set("state", signed)
+	q.Set("state", rawState)
 	u.RawQuery = q.Encode()
-	return u.String(), nil
+	return StartResult{Redirect: u.String(), State: rawState, ExpiresAt: expiresAt}, nil
 }
 
-// Callback verifies the state, exchanges the code, resolves or creates the
-// local user and establishes an SSO session.
-func (s *Service) Callback(ctx context.Context, providerCode, rawState, code string, in auth.LoginInput) (auth.LoginResult, string, error) {
-	st, err := verifyState(s.stateSecret, rawState)
-	if err != nil || st.Provider != providerCode {
+// Callback принимает state только из того браузера, который начал вход, и
+// атомарно потребляет его до обмена authorization code.
+func (s *Service) Callback(ctx context.Context, providerCode, rawState, browserState, code string, in auth.LoginInput) (auth.LoginResult, string, error) {
+	if rawState == "" || len(rawState) != len(browserState) || subtle.ConstantTimeCompare([]byte(rawState), []byte(browserState)) != 1 {
+		return auth.LoginResult{}, "", ErrBrokerFailed
+	}
+	loginState, err := s.repo.ConsumeLoginState(ctx, hashLoginState(rawState), providerCode)
+	if err != nil {
 		return auth.LoginResult{}, "", ErrBrokerFailed
 	}
 	p, err := s.repo.FindByCode(ctx, providerCode)
@@ -199,7 +227,7 @@ func (s *Service) Callback(ctx context.Context, providerCode, rawState, code str
 		return auth.LoginResult{}, "", err
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &u.ID, Action: "broker_login_success", TargetType: "identity_provider", TargetID: p.Code, IP: in.IP, UserAgent: in.UserAgent})
-	return res, st.Continue, nil
+	return res, loginState.ContinueURL, nil
 }
 
 func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (IdentityClaims, error) {
@@ -259,8 +287,8 @@ func (s *Service) fetchIdentity(ctx context.Context, p Provider, code string) (I
 	if v, ok := m["email"].(string); ok {
 		id.Email = v
 	}
-	// Only a boolean true is trusted. Providers that omit the claim (e.g. GitHub
-	// /user) leave this false, so the email is never used to link accounts.
+	// Доверенным считается только логическое значение true. Если провайдер не вернул
+	// признак (например, GitHub /user), email не используется для привязки учётных записей.
 	if v, ok := m["email_verified"].(bool); ok {
 		id.EmailVerified = v
 	}

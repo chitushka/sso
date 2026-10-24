@@ -2,12 +2,6 @@ package broker
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
-	"strings"
 	"time"
 
 	"github.com/chitushka/sso/internal/users"
@@ -30,6 +24,13 @@ type Provider struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+type LoginState struct {
+	StateHash    []byte
+	ProviderCode string
+	ContinueURL  string
+	ExpiresAt    time.Time
+}
+
 type IdentityClaims struct {
 	Subject       string
 	Email         string
@@ -49,11 +50,13 @@ type Repository interface {
 	Create(ctx context.Context, p Provider) (Provider, error)
 	Update(ctx context.Context, p Provider) (Provider, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+	CreateLoginState(ctx context.Context, state LoginState) error
+	ConsumeLoginState(ctx context.Context, stateHash []byte, providerCode string) (LoginState, error)
 	ResolveIdentity(ctx context.Context, provider Provider, claims IdentityClaims) (IdentityResolution, error)
 }
 
-// applyPreset fills the endpoint URLs for well-known provider types so admins
-// only have to supply client_id/client_secret.
+// applyPreset заполняет адреса известных провайдеров, чтобы администратору
+// оставалось указать только client_id и client_secret.
 func applyPreset(p Provider) Provider {
 	switch p.Type {
 	case "google":
@@ -81,53 +84,4 @@ func applyPreset(p Provider) Provider {
 		}
 	}
 	return p
-}
-
-// state is the HMAC-signed round-trip payload protecting the broker flow
-// against CSRF and callback forgery.
-type state struct {
-	Provider string    `json:"p"`
-	Nonce    string    `json:"n"`
-	Continue string    `json:"c"`
-	Exp      time.Time `json:"e"`
-}
-
-var errBadState = errors.New("invalid state")
-
-func signState(secret []byte, s state) (string, error) {
-	payload, err := json.Marshal(s)
-	if err != nil {
-		return "", err
-	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(payload)
-	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
-}
-
-func verifyState(secret []byte, raw string) (state, error) {
-	parts := strings.SplitN(raw, ".", 2)
-	if len(parts) != 2 {
-		return state{}, errBadState
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return state{}, errBadState
-	}
-	sig, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return state{}, errBadState
-	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(payload)
-	if !hmac.Equal(sig, mac.Sum(nil)) {
-		return state{}, errBadState
-	}
-	var s state
-	if err := json.Unmarshal(payload, &s); err != nil {
-		return state{}, errBadState
-	}
-	if time.Now().After(s.Exp) {
-		return state{}, errBadState
-	}
-	return s, nil
 }

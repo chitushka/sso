@@ -89,7 +89,7 @@ func (r *PostgresRepository) Create(ctx context.Context, p Provider) (Provider, 
 	return out, err
 }
 func (r *PostgresRepository) Update(ctx context.Context, p Provider) (Provider, error) {
-	// An empty secret keeps the stored one, mirroring the LDAP provider UX.
+	// Пустой секрет сохраняет прежнее значение, как и в настройках LDAP-провайдера.
 	if p.ClientSecret == "" {
 		current, err := r.scanProvider(r.pool.QueryRow(ctx, `SELECT `+providerCols+` FROM identity_providers WHERE id=$1`, p.ID))
 		if err != nil {
@@ -109,6 +109,26 @@ func (r *PostgresRepository) Delete(ctx context.Context, id uuid.UUID) error {
 		return storage.ErrNotFound
 	}
 	return err
+}
+func (r *PostgresRepository) CreateLoginState(ctx context.Context, state LoginState) error {
+	_, err := r.pool.Exec(ctx, `INSERT INTO broker_login_states(state_hash,provider_code,continue_url,expires_at)
+		VALUES($1,$2,$3,$4)`, state.StateHash, state.ProviderCode, state.ContinueURL, state.ExpiresAt)
+	return err
+}
+
+// ConsumeLoginState атомарно удаляет и возвращает действующее состояние.
+// Удаление не позволяет двум callback использовать один state.
+func (r *PostgresRepository) ConsumeLoginState(ctx context.Context, stateHash []byte, providerCode string) (LoginState, error) {
+	var state LoginState
+	state.StateHash = stateHash
+	err := r.pool.QueryRow(ctx, `DELETE FROM broker_login_states
+		WHERE state_hash=$1 AND provider_code=$2 AND expires_at>now()
+		RETURNING provider_code,continue_url,expires_at`, stateHash, providerCode).
+		Scan(&state.ProviderCode, &state.ContinueURL, &state.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return LoginState{}, storage.ErrNotFound
+	}
+	return state, err
 }
 func (r *PostgresRepository) ResolveIdentity(ctx context.Context, provider Provider, claims IdentityClaims) (IdentityResolution, error) {
 	tx, err := r.pool.Begin(ctx)

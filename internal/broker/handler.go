@@ -3,7 +3,9 @@ package broker
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/chitushka/sso/internal/auth"
 	"github.com/chitushka/sso/internal/httpx"
@@ -11,6 +13,32 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
+
+const brokerStateCookieName = "sso_broker_state"
+
+func setBrokerStateCookie(w http.ResponseWriter, req *http.Request, state string, expiresAt time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     brokerStateCookieName,
+		Value:    state,
+		Path:     "/oauth2/broker/",
+		HttpOnly: true,
+		Secure:   httpx.IsHTTPS(req),
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expiresAt,
+	})
+}
+
+func clearBrokerStateCookie(w http.ResponseWriter, req *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     brokerStateCookieName,
+		Value:    "",
+		Path:     "/oauth2/broker/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   httpx.IsHTTPS(req),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
 
 func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler, require func(string, string) func(http.Handler) http.Handler) {
 	// Публичный список определяет кнопки внешнего входа на странице авторизации.
@@ -29,7 +57,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 		if !safeContinue(cont) {
 			cont = "/" // Разрешены только same-origin адреса продолжения.
 		}
-		redirect, err := svc.Start(req.Context(), chi.URLParam(req, "code"), cont)
+		result, err := svc.Start(req.Context(), chi.URLParam(req, "code"), cont)
 		if err != nil {
 			if errors.Is(err, storage.ErrNotFound) || errors.Is(err, ErrProviderDisabled) {
 				httpx.Error(w, 404, "unknown identity provider")
@@ -38,16 +66,23 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			httpx.Error(w, 500, "failed to start external login")
 			return
 		}
-		http.Redirect(w, req, redirect, http.StatusFound)
+		setBrokerStateCookie(w, req, result.State, result.ExpiresAt)
+		http.Redirect(w, req, result.Redirect, http.StatusFound)
 	})
 
 	r.Get("/oauth2/broker/{code}/callback", func(w http.ResponseWriter, req *http.Request) {
 		httpx.NoStore(w)
+		cookie, _ := req.Cookie(brokerStateCookieName)
+		browserState := ""
+		if cookie != nil {
+			browserState = cookie.Value
+		}
+		clearBrokerStateCookie(w, req)
 		if e := req.URL.Query().Get("error"); e != "" {
-			http.Redirect(w, req, "/login?broker_error="+e, http.StatusFound)
+			http.Redirect(w, req, "/login?broker_error="+url.QueryEscape(e), http.StatusFound)
 			return
 		}
-		res, cont, err := svc.Callback(req.Context(), chi.URLParam(req, "code"), req.URL.Query().Get("state"), req.URL.Query().Get("code"), auth.LoginInput{IP: httpx.ClientIP(req), UserAgent: req.UserAgent()})
+		res, cont, err := svc.Callback(req.Context(), chi.URLParam(req, "code"), req.URL.Query().Get("state"), browserState, req.URL.Query().Get("code"), auth.LoginInput{IP: httpx.ClientIP(req), UserAgent: req.UserAgent()})
 		if err != nil {
 			http.Redirect(w, req, "/login?broker_error=failed", http.StatusFound)
 			return

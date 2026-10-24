@@ -32,16 +32,16 @@ func TestLatestVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 15 {
-		t.Fatalf("latest migration = %d, want 15", version)
+	if version != 16 {
+		t.Fatalf("latest migration = %d, want 16", version)
 	}
 }
 
 func TestCheckSchema(t *testing.T) {
-	if err := CheckSchema(context.Background(), schemaDB{row: schemaRow{version: 15}}); err != nil {
+	if err := CheckSchema(context.Background(), schemaDB{row: schemaRow{version: 16}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, row := range []schemaRow{{version: 14}, {version: 15, dirty: true}, {err: errors.New("missing table")}} {
+	for _, row := range []schemaRow{{version: 15}, {version: 16, dirty: true}, {err: errors.New("missing table")}} {
 		if err := CheckSchema(context.Background(), schemaDB{row: row}); err == nil {
 			t.Fatalf("expected schema check failure for %+v", row)
 		}
