@@ -413,7 +413,8 @@ func administrativeCRUDEndToEnd(t *testing.T, credential string) {
 	}
 
 	var ldapProvider struct {
-		ID string `json:"id"`
+		ID           string  `json:"id"`
+		BindPassword *string `json:"bind_password"`
 	}
 	ldapBody := map[string]any{
 		"name": "Directory", "host": "ldap.example.org", "port": 389,
@@ -422,15 +423,27 @@ func administrativeCRUDEndToEnd(t *testing.T, credential string) {
 		"username_attribute": "uid", "email_attribute": "mail", "display_name_attribute": "cn",
 		"group_attribute": "memberOf", "enabled": true,
 	}
-	if resp := doJSON(t, http.MethodPost, "/api/v1/ldap/providers", credential, ldapBody, &ldapProvider); resp.StatusCode != http.StatusCreated || ldapProvider.ID == "" {
+	if resp := doJSON(t, http.MethodPost, "/api/v1/ldap/providers", credential, ldapBody, &ldapProvider); resp.StatusCode != http.StatusCreated || ldapProvider.ID == "" || ldapProvider.BindPassword != nil {
 		t.Fatalf("create LDAP provider: %d %+v", resp.StatusCode, ldapProvider)
 	}
 	ldapBody["name"] = "Directory updated"
-	if resp := doJSON(t, http.MethodPut, "/api/v1/ldap/providers/"+ldapProvider.ID, credential, ldapBody, nil); resp.StatusCode != http.StatusOK {
-		t.Fatalf("update LDAP provider: %d", resp.StatusCode)
+	ldapBody["bind_password"] = ""
+	var updatedLDAPProvider struct {
+		BindPassword *string `json:"bind_password"`
 	}
-	if resp := doJSON(t, http.MethodGet, "/api/v1/ldap/providers", credential, nil, nil); resp.StatusCode != http.StatusOK {
-		t.Fatalf("list LDAP providers: %d", resp.StatusCode)
+	if resp := doJSON(t, http.MethodPut, "/api/v1/ldap/providers/"+ldapProvider.ID, credential, ldapBody, &updatedLDAPProvider); resp.StatusCode != http.StatusOK || updatedLDAPProvider.BindPassword != nil {
+		t.Fatalf("update LDAP provider: %d %+v", resp.StatusCode, updatedLDAPProvider)
+	}
+	var ldapProviders []struct {
+		BindPassword *string `json:"bind_password"`
+	}
+	if resp := doJSON(t, http.MethodGet, "/api/v1/ldap/providers", credential, nil, &ldapProviders); resp.StatusCode != http.StatusOK || len(ldapProviders) == 0 {
+		t.Fatalf("list LDAP providers: %d %+v", resp.StatusCode, ldapProviders)
+	}
+	for _, provider := range ldapProviders {
+		if provider.BindPassword != nil {
+			t.Fatalf("list LDAP providers exposes bind_password: %+v", ldapProviders)
+		}
 	}
 
 	var identityProvider struct {

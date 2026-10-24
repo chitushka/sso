@@ -3,6 +3,7 @@ package ldap
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/chitushka/sso/internal/httpx"
 	"github.com/chitushka/sso/internal/storage"
@@ -10,6 +11,55 @@ import (
 	"github.com/google/uuid"
 )
 
+// providerResponse намеренно не содержит BindPassword: транспортный слой не
+// должен возвращать расшифрованный секрет ни при каких правах вызывающего.
+type providerResponse struct {
+	ID                   uuid.UUID `json:"id"`
+	Name                 string    `json:"name"`
+	Host                 string    `json:"host"`
+	Port                 int       `json:"port"`
+	UseTLS               bool      `json:"use_tls"`
+	StartTLS             bool      `json:"start_tls"`
+	BindDN               string    `json:"bind_dn"`
+	BaseDN               string    `json:"base_dn"`
+	UserFilter           string    `json:"user_filter"`
+	UsernameAttribute    string    `json:"username_attribute"`
+	EmailAttribute       string    `json:"email_attribute"`
+	DisplayNameAttribute string    `json:"display_name_attribute"`
+	GroupAttribute       string    `json:"group_attribute"`
+	Enabled              bool      `json:"enabled"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+func newProviderResponse(p Provider) providerResponse {
+	return providerResponse{
+		ID:                   p.ID,
+		Name:                 p.Name,
+		Host:                 p.Host,
+		Port:                 p.Port,
+		UseTLS:               p.UseTLS,
+		StartTLS:             p.StartTLS,
+		BindDN:               p.BindDN,
+		BaseDN:               p.BaseDN,
+		UserFilter:           p.UserFilter,
+		UsernameAttribute:    p.UsernameAttribute,
+		EmailAttribute:       p.EmailAttribute,
+		DisplayNameAttribute: p.DisplayNameAttribute,
+		GroupAttribute:       p.GroupAttribute,
+		Enabled:              p.Enabled,
+		CreatedAt:            p.CreatedAt,
+		UpdatedAt:            p.UpdatedAt,
+	}
+}
+
+func newProviderResponses(providers []Provider) []providerResponse {
+	out := make([]providerResponse, len(providers))
+	for i, provider := range providers {
+		out[i] = newProviderResponse(provider)
+	}
+	return out
+}
 func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) http.Handler, require func(string, string) func(http.Handler) http.Handler) {
 	r.Route("/api/v1/ldap/providers", func(r chi.Router) {
 		r.Use(bearerAuth)
@@ -19,7 +69,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 				httpx.Error(w, 500, "failed to list providers")
 				return
 			}
-			httpx.JSON(w, 200, out)
+			httpx.JSON(w, 200, newProviderResponses(out))
 		})
 		r.With(require("ldap", "create")).Post("/", func(w http.ResponseWriter, r *http.Request) {
 			var p Provider
@@ -36,7 +86,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 				httpx.Error(w, 500, "failed to create provider")
 				return
 			}
-			httpx.JSON(w, 201, out)
+			httpx.JSON(w, 201, newProviderResponse(out))
 		})
 		r.With(require("ldap", "update")).Put("/{id}", func(w http.ResponseWriter, r *http.Request) {
 			id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -63,7 +113,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 				httpx.Error(w, 500, "failed to update provider")
 				return
 			}
-			httpx.JSON(w, 200, out)
+			httpx.JSON(w, 200, newProviderResponse(out))
 		})
 		r.With(require("ldap", "delete")).Delete("/{id}", func(w http.ResponseWriter, r *http.Request) {
 			id, err := uuid.Parse(chi.URLParam(r, "id"))
