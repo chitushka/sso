@@ -11,12 +11,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// oauthError writes an RFC 6749 error response: {"error": ..., "error_description": ...}.
+// oauthError записывает ответ об ошибке в формате RFC 6749.
 func oauthError(w http.ResponseWriter, status int, code, description string) {
 	httpx.JSON(w, status, map[string]string{"error": code, "error_description": description})
 }
 
-// tokenError maps service errors to RFC 6749 token endpoint error codes.
+// tokenError преобразует ошибки сервиса в коды ошибок token endpoint по RFC 6749.
 func tokenError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrInvalidClient):
@@ -41,8 +41,8 @@ func sessionCookie(r *http.Request) string {
 	return c.Value
 }
 
-// clientCredentials extracts client_id/client_secret from the form or the Basic
-// header (RFC 6749 §2.3.1: Basic credentials are form-urlencoded).
+// clientCredentials извлекает client_id/client_secret из формы или заголовка Basic.
+// Согласно RFC 6749 §2.3.1 данные Basic имеют формат application/x-www-form-urlencoded.
 func clientCredentials(r *http.Request) (string, string) {
 	clientID, clientSecret := r.Form.Get("client_id"), r.Form.Get("client_secret")
 	if id, sec, ok := r.BasicAuth(); ok {
@@ -219,7 +219,7 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 		}
 		httpx.JSON(w, 200, out)
 	})
-	r.Post("/oauth2/consent", func(w http.ResponseWriter, r *http.Request) {
+	r.With(bearerAuth).Post("/oauth2/consent", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ClientID string `json:"client_id"`
 			Scope    string `json:"scope"`

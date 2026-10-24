@@ -669,6 +669,70 @@ func TestEndToEnd(t *testing.T) {
 	if createClientResp.StatusCode != 201 || created.ClientSecret == "" {
 		t.Fatalf("create client: %d %+v", createClientResp.StatusCode, created)
 	}
+
+	consentBody, err := json.Marshal(map[string]string{"client_id": "test-app", "scope": "openid profile"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestConsent := func(csrf, origin, fetchSite, contentType string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/oauth2/consent", bytes.NewReader(consentBody))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.AddCookie(&http.Cookie{Name: "sso_session", Value: admin.SessionToken})
+		req.AddCookie(&http.Cookie{Name: "sso_csrf", Value: admin.CSRFToken})
+		if csrf != "" {
+			req.Header.Set("X-CSRF-Token", csrf)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if fetchSite != "" {
+			req.Header.Set("Sec-Fetch-Site", fetchSite)
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	for name, test := range map[string]struct {
+		csrf, origin, fetchSite, contentType string
+		wantStatus                           int
+	}{
+		"без CSRF-заголовка":        {origin: server.URL, contentType: "application/json", wantStatus: http.StatusForbidden},
+		"неверный CSRF-токен":       {csrf: "wrong", origin: server.URL, contentType: "application/json", wantStatus: http.StatusForbidden},
+		"чужой Origin":              {csrf: admin.CSRFToken, origin: "https://evil.example", contentType: "application/json", wantStatus: http.StatusForbidden},
+		"cross-site Fetch Metadata": {csrf: admin.CSRFToken, origin: server.URL, fetchSite: "cross-site", contentType: "application/json", wantStatus: http.StatusForbidden},
+		"неверный Content-Type":     {csrf: admin.CSRFToken, origin: server.URL, contentType: "text/plain", wantStatus: http.StatusBadRequest},
+	} {
+		t.Run("consent "+name, func(t *testing.T) {
+			if status := requestConsent(test.csrf, test.origin, test.fetchSite, test.contentType); status != test.wantStatus {
+				t.Fatalf("status=%d, ожидался %d", status, test.wantStatus)
+			}
+		})
+	}
+	var consentCount int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM user_consents WHERE user_id=$1 AND client_id='test-app'`, admin.User.ID).Scan(&consentCount); err != nil {
+		t.Fatal(err)
+	}
+	if consentCount != 0 {
+		t.Fatalf("отклонённый consent изменил данные: записей=%d", consentCount)
+	}
+	if status := requestConsent(admin.CSRFToken, server.URL, "same-origin", "application/json; charset=utf-8"); status != http.StatusOK {
+		t.Fatalf("корректный same-origin consent: status=%d", status)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM user_consents WHERE user_id=$1 AND client_id='test-app'`, admin.User.ID).Scan(&consentCount); err != nil {
+		t.Fatal(err)
+	}
+	if consentCount != 1 {
+		t.Fatalf("согласие не сохранено: записей=%d", consentCount)
+	}
 	var rotated struct {
 		ClientSecret string `json:"client_secret"`
 	}

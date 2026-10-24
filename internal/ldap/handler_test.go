@@ -116,6 +116,9 @@ func TestLDAPProviderResponsesDoNotExposeBindPassword(t *testing.T) {
 			}
 
 			req := httptest.NewRequest(tt.method, tt.path, body)
+			if tt.method != http.MethodGet {
+				req.Header.Set("Content-Type", "application/json")
+			}
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 

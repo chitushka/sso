@@ -22,6 +22,7 @@ func TestNoStoreSetsRequiredHeaders(t *testing.T) {
 
 func TestDecodeRejectsTrailingJSON(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader("{\"name\":\"first\"} {\"name\":\"second\"}"))
+	req.Header.Set("Content-Type", "application/json")
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -32,6 +33,7 @@ func TestDecodeRejectsTrailingJSON(t *testing.T) {
 
 func TestDecodeAcceptsOneJSONDocument(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader("{\"name\":\"value\"}\n"))
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -40,5 +42,20 @@ func TestDecodeAcceptsOneJSONDocument(t *testing.T) {
 	}
 	if body.Name != "value" {
 		t.Fatalf("unexpected value %q", body.Name)
+	}
+}
+
+func TestDecodeRejectsNonJSONContentType(t *testing.T) {
+	for _, contentType := range []string{"", "text/plain", "application/x-www-form-urlencoded"} {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"value"}`))
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := Decode(req, &body); err == nil {
+			t.Fatalf("Content-Type %q принят как JSON", contentType)
+		}
 	}
 }

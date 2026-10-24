@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 )
 
@@ -25,6 +26,10 @@ func JSON(w http.ResponseWriter, status int, v any) {
 }
 func Error(w http.ResponseWriter, status int, msg string) { JSON(w, status, ErrorResponse{Error: msg}) }
 func Decode(r *http.Request, v any) error {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return errors.New("content type must be application/json")
+	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {

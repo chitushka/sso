@@ -41,38 +41,44 @@ func TestProtectedAuthCookieRequiresCSRFForWrites(t *testing.T) {
 	sessions := cookieSessions{session: Session{UserID: userID, ExpiresAt: time.Now().Add(time.Hour)}}
 	handler := ProtectedAuth(nil, sessions, userRepo, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ClaimsFromContext(r.Context()).UserID != userID.String() {
-			t.Fatal("session user was not placed in context")
+			t.Fatal("пользователь сессии не добавлен в контекст")
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/users", nil)
-	req.AddCookie(&http.Cookie{Name: "sso_session", Value: "opaque"})
-	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "csrf"})
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("missing CSRF header: got %d", w.Code)
+	request := func(csrf, origin, fetchSite string) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/users", nil)
+		req.AddCookie(&http.Cookie{Name: "sso_session", Value: "opaque"})
+		req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "csrf"})
+		if csrf != "" {
+			req.Header.Set("X-CSRF-Token", csrf)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if fetchSite != "" {
+			req.Header.Set("Sec-Fetch-Site", fetchSite)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w.Code
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/users", nil)
-	req.AddCookie(&http.Cookie{Name: "sso_session", Value: "opaque"})
-	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "csrf"})
-	req.Header.Set("X-CSRF-Token", "csrf")
-	w = httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("valid CSRF token: got %d", w.Code)
-	}
-
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/users", nil)
-	req.AddCookie(&http.Cookie{Name: "sso_session", Value: "opaque"})
-	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: "csrf"})
-	req.Header.Set("X-CSRF-Token", "csrf")
-	req.Header.Set("Origin", "https://evil.example")
-	w = httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("cross-site origin: got %d", w.Code)
+	for name, test := range map[string]struct {
+		csrf, origin, fetchSite string
+		wantStatus              int
+	}{
+		"нет CSRF-заголовка":            {origin: "http://example.com", wantStatus: http.StatusForbidden},
+		"неверный CSRF-токен":           {csrf: "wrong", origin: "http://example.com", wantStatus: http.StatusForbidden},
+		"чужой Origin":                  {csrf: "csrf", origin: "https://evil.example", wantStatus: http.StatusForbidden},
+		"cross-site Fetch Metadata":     {csrf: "csrf", origin: "http://example.com", fetchSite: "cross-site", wantStatus: http.StatusForbidden},
+		"корректный same-origin запрос": {csrf: "csrf", origin: "http://example.com", fetchSite: "same-origin", wantStatus: http.StatusNoContent},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if status := request(test.csrf, test.origin, test.fetchSite); status != test.wantStatus {
+				t.Fatalf("status=%d, ожидался %d", status, test.wantStatus)
+			}
+		})
 	}
 }
