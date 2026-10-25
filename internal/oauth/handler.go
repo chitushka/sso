@@ -166,18 +166,33 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 	})
 	r.Get("/oauth2/authorize", func(w http.ResponseWriter, r *http.Request) {
 		httpx.NoStore(w)
-		out, err := svc.Authorize(r.Context(), AuthorizeInput{ResponseType: r.URL.Query().Get("response_type"), ClientID: r.URL.Query().Get("client_id"), RedirectURI: r.URL.Query().Get("redirect_uri"), Scope: r.URL.Query().Get("scope"), State: r.URL.Query().Get("state"), CodeChallenge: r.URL.Query().Get("code_challenge"), CodeChallengeMethod: r.URL.Query().Get("code_challenge_method"), Nonce: r.URL.Query().Get("nonce"), SessionToken: sessionCookie(r)})
+		requestToken := r.URL.Query().Get("request")
+		in := AuthorizeInput{ResponseType: r.URL.Query().Get("response_type"), ClientID: r.URL.Query().Get("client_id"), RedirectURI: r.URL.Query().Get("redirect_uri"), Scope: r.URL.Query().Get("scope"), State: r.URL.Query().Get("state"), CodeChallenge: r.URL.Query().Get("code_challenge"), CodeChallengeMethod: r.URL.Query().Get("code_challenge_method"), Nonce: r.URL.Query().Get("nonce"), SessionToken: sessionCookie(r)}
+		var out AuthorizeResult
+		var err error
+		if requestToken != "" {
+			out, err = svc.ResumeAuthorization(r.Context(), requestToken, in.SessionToken)
+		} else {
+			out, err = svc.StartAuthorization(r.Context(), in)
+		}
 		if err != nil {
-			switch {
-			case errors.Is(err, ErrLoginRequired):
-				oauthError(w, 401, "login_required", "no active session, authenticate first")
-			case errors.Is(err, ErrConsentRequired):
-				oauthError(w, 403, "consent_required", "user consent is required for the requested scopes")
-			case errors.Is(err, ErrInvalidScope):
-				oauthError(w, 400, "invalid_scope", "requested scope is not allowed for this client")
-			default:
-				oauthError(w, 400, "invalid_request", err.Error())
+			redirect := ""
+			ok := false
+			if requestToken != "" {
+				redirect, ok = svc.AuthorizationRequestErrorRedirect(r.Context(), requestToken, err)
+			} else {
+				redirect, ok = svc.AuthorizationErrorRedirect(r.Context(), in, err)
 			}
+			if ok {
+				http.Redirect(w, r, redirect, http.StatusFound)
+				return
+			}
+			code, description := authorizationErrorDetails(err)
+			status := http.StatusBadRequest
+			if code == "server_error" {
+				status = http.StatusInternalServerError
+			}
+			oauthError(w, status, code, description)
 			return
 		}
 		http.Redirect(w, r, out.Redirect, http.StatusFound)
@@ -205,7 +220,14 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 	r.Get("/oauth2/logout", logout)
 	r.Post("/oauth2/logout", logout)
 	r.Get("/oauth2/consent", func(w http.ResponseWriter, r *http.Request) {
-		out, err := svc.GetConsentInfo(r.Context(), sessionCookie(r), r.URL.Query().Get("client_id"), r.URL.Query().Get("scope"))
+		requestToken := r.URL.Query().Get("request")
+		var out ConsentInfo
+		var err error
+		if requestToken != "" {
+			out, err = svc.GetAuthorizationConsentInfo(r.Context(), sessionCookie(r), requestToken)
+		} else {
+			out, err = svc.GetConsentInfo(r.Context(), sessionCookie(r), r.URL.Query().Get("client_id"), r.URL.Query().Get("scope"))
+		}
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrLoginRequired):
@@ -223,12 +245,29 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 		var req struct {
 			ClientID string `json:"client_id"`
 			Scope    string `json:"scope"`
+			Request  string `json:"request"`
+			Decision string `json:"decision"`
 		}
 		if err := httpx.Decode(r, &req); err != nil {
 			oauthError(w, 400, "invalid_request", "invalid json body")
 			return
 		}
-		if err := svc.GrantConsent(r.Context(), sessionCookie(r), req.ClientID, req.Scope); err != nil {
+		if req.Request != "" && req.Decision == "deny" {
+			redirect, err := svc.DenyAuthorization(r.Context(), sessionCookie(r), req.Request)
+			if err != nil {
+				oauthError(w, 400, "invalid_request", err.Error())
+				return
+			}
+			httpx.JSON(w, 200, map[string]string{"status": "denied", "redirect": redirect})
+			return
+		}
+		var err error
+		if req.Request != "" {
+			err = svc.GrantAuthorizationConsent(r.Context(), sessionCookie(r), req.Request)
+		} else {
+			err = svc.GrantConsent(r.Context(), sessionCookie(r), req.ClientID, req.Scope)
+		}
+		if err != nil {
 			switch {
 			case errors.Is(err, ErrLoginRequired):
 				oauthError(w, 401, "login_required", "no active session")
@@ -239,7 +278,11 @@ func RegisterRoutes(r chi.Router, svc *Service, bearerAuth func(http.Handler) ht
 			}
 			return
 		}
-		httpx.JSON(w, 200, map[string]string{"status": "granted"})
+		out := map[string]string{"status": "granted"}
+		if req.Request != "" {
+			out["redirect"] = "/oauth2/authorize?request=" + url.QueryEscape(req.Request)
+		}
+		httpx.JSON(w, 200, out)
 	})
 	r.Post("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
 		httpx.NoStore(w)

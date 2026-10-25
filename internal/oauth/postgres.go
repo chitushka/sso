@@ -188,3 +188,30 @@ func (r *PostgresRepository) ConsumeCode(ctx context.Context, hash string) (Auth
 	}
 	return c, err
 }
+
+const authorizationRequestCols = "request_hash,response_type,client_id,redirect_uri,scope,state,code_challenge,code_challenge_method,nonce,expires_at"
+
+func scanAuthorizationRequest(row pgx.Row) (AuthorizationRequest, error) {
+	var req AuthorizationRequest
+	err := row.Scan(&req.RequestHash, &req.ResponseType, &req.ClientID, &req.RedirectURI, &req.Scope, &req.State, &req.CodeChallenge, &req.CodeChallengeMethod, &req.Nonce, &req.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return req, storage.ErrNotFound
+	}
+	return req, err
+}
+
+func (r *PostgresRepository) CreateAuthorizationRequest(ctx context.Context, req AuthorizationRequest) error {
+	_, err := r.pool.Exec(ctx, `INSERT INTO oauth_authorization_requests(request_hash,response_type,client_id,redirect_uri,scope,state,code_challenge,code_challenge_method,nonce,expires_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, req.RequestHash, req.ResponseType, req.ClientID, req.RedirectURI, req.Scope, req.State, req.CodeChallenge, req.CodeChallengeMethod, req.Nonce, req.ExpiresAt)
+	return err
+}
+
+func (r *PostgresRepository) FindAuthorizationRequest(ctx context.Context, hash string) (AuthorizationRequest, error) {
+	return scanAuthorizationRequest(r.pool.QueryRow(ctx, `SELECT `+authorizationRequestCols+` FROM oauth_authorization_requests WHERE request_hash=$1 AND expires_at>now()`, hash))
+}
+
+// ConsumeAuthorizationRequest атомарно удаляет одноразовый контекст. Это не
+// позволяет параллельным запросам выпустить два кода авторизации.
+func (r *PostgresRepository) ConsumeAuthorizationRequest(ctx context.Context, hash string) (AuthorizationRequest, error) {
+	return scanAuthorizationRequest(r.pool.QueryRow(ctx, `DELETE FROM oauth_authorization_requests WHERE request_hash=$1 AND expires_at>now() RETURNING `+authorizationRequestCols, hash))
+}

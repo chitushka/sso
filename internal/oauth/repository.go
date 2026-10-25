@@ -16,6 +16,9 @@ type Repository interface {
 	DeleteClient(ctx context.Context, id uuid.UUID) error
 	CreateCode(ctx context.Context, c AuthorizationCode) (AuthorizationCode, error)
 	ConsumeCode(ctx context.Context, hash string) (AuthorizationCode, error)
+	CreateAuthorizationRequest(ctx context.Context, req AuthorizationRequest) error
+	FindAuthorizationRequest(ctx context.Context, hash string) (AuthorizationRequest, error)
+	ConsumeAuthorizationRequest(ctx context.Context, hash string) (AuthorizationRequest, error)
 	CreateRefreshToken(ctx context.Context, t RefreshToken) (RefreshToken, error)
 	FindRefreshTokenByHash(ctx context.Context, hash string) (RefreshToken, error)
 	MarkRefreshTokenRotated(ctx context.Context, id uuid.UUID) error

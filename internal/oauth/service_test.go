@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"errors"
+	"net/url"
 	"testing"
 	"time"
 
@@ -19,10 +20,11 @@ type fakeRepo struct {
 	codes    map[string]AuthorizationCode
 	refresh  map[string]RefreshToken
 	consents map[string]UserConsent
+	requests map[string]AuthorizationRequest
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{clients: map[string]Client{}, codes: map[string]AuthorizationCode{}, refresh: map[string]RefreshToken{}, consents: map[string]UserConsent{}}
+	return &fakeRepo{clients: map[string]Client{}, codes: map[string]AuthorizationCode{}, refresh: map[string]RefreshToken{}, consents: map[string]UserConsent{}, requests: map[string]AuthorizationRequest{}}
 }
 func (r *fakeRepo) CreateClient(_ context.Context, c Client) (Client, string, error) {
 	r.clients[c.ClientID] = c
@@ -50,6 +52,25 @@ func (r *fakeRepo) ConsumeCode(_ context.Context, hash string) (AuthorizationCod
 	c.UsedAt = &now
 	r.codes[hash] = c
 	return c, nil
+}
+func (r *fakeRepo) CreateAuthorizationRequest(_ context.Context, req AuthorizationRequest) error {
+	r.requests[req.RequestHash] = req
+	return nil
+}
+func (r *fakeRepo) FindAuthorizationRequest(_ context.Context, hash string) (AuthorizationRequest, error) {
+	req, ok := r.requests[hash]
+	if !ok || time.Now().After(req.ExpiresAt) {
+		return AuthorizationRequest{}, storage.ErrNotFound
+	}
+	return req, nil
+}
+func (r *fakeRepo) ConsumeAuthorizationRequest(ctx context.Context, hash string) (AuthorizationRequest, error) {
+	req, err := r.FindAuthorizationRequest(ctx, hash)
+	if err != nil {
+		return AuthorizationRequest{}, err
+	}
+	delete(r.requests, hash)
+	return req, nil
 }
 func (r *fakeRepo) UpdateClient(_ context.Context, c Client) (Client, error) {
 	for id, old := range r.clients {
@@ -304,11 +325,96 @@ func TestAuthorizeRejectsScopeOutsideAllowed(t *testing.T) {
 	}
 }
 
+func TestAuthorizationErrorRedirectRequiresRegisteredURI(t *testing.T) {
+	svc, _, _, session := setup(t, confidentialClient())
+	in := AuthorizeInput{ResponseType: "code", ClientID: "web-app", RedirectURI: "https://app.example.com/cb", Scope: "admin", State: "client-state", SessionToken: session}
+	_, err := svc.StartAuthorization(context.Background(), in)
+	if !errors.Is(err, ErrInvalidScope) {
+		t.Fatalf("want ErrInvalidScope, got %v", err)
+	}
+	redirect, ok := svc.AuthorizationErrorRedirect(context.Background(), in, err)
+	if !ok {
+		t.Fatal("ошибка не перенаправлена на зарегистрированный URI")
+	}
+	u, _ := url.Parse(redirect)
+	if u.Query().Get("error") != "invalid_scope" || u.Query().Get("state") != "client-state" {
+		t.Fatalf("неверный redirect ошибки: %q", redirect)
+	}
+	in.RedirectURI = "https://evil.example/callback"
+	if _, ok := svc.AuthorizationErrorRedirect(context.Background(), in, err); ok {
+		t.Fatal("ошибка перенаправлена на незарегистрированный URI")
+	}
+}
+
 func TestAuthorizeAllowsSubsetScope(t *testing.T) {
 	svc, _, _, session := setup(t, confidentialClient())
 	res := authorize(t, svc, session, "openid email")
 	if res.Code == "" {
 		t.Fatal("expected code")
+	}
+}
+
+func TestInteractiveAuthorizationPreservesServerSideRequest(t *testing.T) {
+	client := confidentialClient()
+	client.SkipConsent = false
+	svc, repo, _, session := setup(t, client)
+	in := AuthorizeInput{ResponseType: "code", ClientID: "web-app", RedirectURI: "https://app.example.com/cb", Scope: "openid profile", State: "original-state", CodeChallenge: "challenge", CodeChallengeMethod: "S256", Nonce: "original-nonce"}
+
+	start, err := svc.StartAuthorization(context.Background(), in)
+	if err != nil {
+		t.Fatalf("start authorization: %v", err)
+	}
+	loginURL, _ := url.Parse(start.Redirect)
+	resumeURL, _ := url.Parse(loginURL.Query().Get("continue"))
+	raw := resumeURL.Query().Get("request")
+	if loginURL.Path != "/login" || raw == "" || len(repo.requests) != 1 {
+		t.Fatalf("неожиданный redirect на вход: %q", start.Redirect)
+	}
+	stored := repo.requests[hashCode(raw)]
+	if stored.State != in.State || stored.Nonce != in.Nonce || stored.CodeChallenge != in.CodeChallenge || stored.RedirectURI != in.RedirectURI {
+		t.Fatalf("серверный контекст изменён: %+v", stored)
+	}
+
+	consent, err := svc.ResumeAuthorization(context.Background(), raw, session)
+	if err != nil {
+		t.Fatalf("resume before consent: %v", err)
+	}
+	if u, _ := url.Parse(consent.Redirect); u.Path != "/consent" || u.Query().Get("request") != raw {
+		t.Fatalf("неожиданный redirect на consent: %q", consent.Redirect)
+	}
+	if err := svc.GrantAuthorizationConsent(context.Background(), session, raw); err != nil {
+		t.Fatalf("grant consent: %v", err)
+	}
+	done, err := svc.ResumeAuthorization(context.Background(), raw, session)
+	if err != nil {
+		t.Fatalf("resume after consent: %v", err)
+	}
+	callback, _ := url.Parse(done.Redirect)
+	if callback.Query().Get("state") != "original-state" || callback.Query().Get("code") == "" {
+		t.Fatalf("неверный callback: %q", done.Redirect)
+	}
+	if _, err := svc.ResumeAuthorization(context.Background(), raw, session); err == nil {
+		t.Fatal("одноразовый запрос авторизации использован повторно")
+	}
+}
+
+func TestDenyAuthorizationReturnsAccessDeniedWithOriginalState(t *testing.T) {
+	client := confidentialClient()
+	client.SkipConsent = false
+	svc, _, _, session := setup(t, client)
+	start, err := svc.StartAuthorization(context.Background(), AuthorizeInput{ResponseType: "code", ClientID: "web-app", RedirectURI: "https://app.example.com/cb", Scope: "openid", State: "client-state", SessionToken: session})
+	if err != nil {
+		t.Fatalf("start authorization: %v", err)
+	}
+	consentURL, _ := url.Parse(start.Redirect)
+	raw := consentURL.Query().Get("request")
+	redirect, err := svc.DenyAuthorization(context.Background(), session, raw)
+	if err != nil {
+		t.Fatalf("deny authorization: %v", err)
+	}
+	callback, _ := url.Parse(redirect)
+	if callback.Query().Get("error") != "access_denied" || callback.Query().Get("state") != "client-state" {
+		t.Fatalf("неверная ошибка отказа: %q", redirect)
 	}
 }
 

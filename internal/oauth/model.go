@@ -59,3 +59,19 @@ type AuthorizationCode struct {
 	UsedAt              *time.Time
 	CreatedAt           time.Time
 }
+
+// AuthorizationRequest хранит неизменяемый контекст интерактивной авторизации.
+// Браузеру передаётся только случайный одноразовый идентификатор, а не исходные
+// OAuth-параметры, поэтому их нельзя подменить между входом и согласием.
+type AuthorizationRequest struct {
+	RequestHash         string
+	ResponseType        string
+	ClientID            string
+	RedirectURI         string
+	Scope               string
+	State               string
+	CodeChallenge       string
+	CodeChallengeMethod string
+	Nonce               string
+	ExpiresAt           time.Time
+}

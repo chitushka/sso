@@ -3,20 +3,16 @@ import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import api, { apiError } from '../api'
 
-// Клиент открывает страницу после ответа consent_required от /oauth2/authorize:
-// /consent?client_id=...&scope=...&continue=<original authorize URL>
 const route = useRoute()
 const info = ref(null)
 const error = ref('')
 const busy = ref(false)
 
-const clientId = String(route.query.client_id || '')
-const scope = String(route.query.scope || '')
-const continueUrl = String(route.query.continue || '')
+const requestToken = String(route.query.request || '')
 
 onMounted(async () => {
   try {
-    const { data } = await api.get('/oauth2/consent', { params: { client_id: clientId, scope } })
+    const { data } = await api.get('/oauth2/consent', { params: { request: requestToken } })
     info.value = data
   } catch (e) {
     if (e.response?.status === 401) {
@@ -31,20 +27,24 @@ async function approve() {
   busy.value = true
   error.value = ''
   try {
-    await api.post('/oauth2/consent', { client_id: clientId, scope })
-    if (continueUrl.startsWith('/oauth2/')) {
-      window.location.href = continueUrl
-    } else {
-      window.location.href = '/'
-    }
+    const { data } = await api.post('/oauth2/consent', { request: requestToken, decision: 'allow' })
+    window.location.href = data.redirect
   } catch (e) {
     error.value = apiError(e)
     busy.value = false
   }
 }
 
-function deny() {
-  window.location.href = '/'
+async function deny() {
+  busy.value = true
+  error.value = ''
+  try {
+    const { data } = await api.post('/oauth2/consent', { request: requestToken, decision: 'deny' })
+    window.location.href = data.redirect
+  } catch (e) {
+    error.value = apiError(e)
+    busy.value = false
+  }
 }
 </script>
 

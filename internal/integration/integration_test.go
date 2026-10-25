@@ -211,6 +211,119 @@ func (r loginResult) credential() string {
 	return "session:" + r.SessionToken + ":" + r.CSRFToken
 }
 
+func interactiveAuthorizationEndToEnd(t *testing.T, adminCredential string) {
+	t.Helper()
+	if resp := doJSON(t, http.MethodPost, "/api/v1/oauth/clients", adminCredential, map[string]any{
+		"client_id": "interactive-app", "name": "Interactive App", "type": "confidential",
+		"redirect_uris": []string{"https://interactive.example/callback"}, "allowed_scopes": []string{"openid", "profile", "email"},
+		"skip_consent": false, "enabled": true,
+	}, nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create interactive client: %d", resp.StatusCode)
+	}
+	if resp := doJSON(t, http.MethodPost, "/api/v1/users", adminCredential, map[string]string{
+		"username": "flow-user", "email": "flow-user@example.org", "password": "FlowPassword1!",
+	}, nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create flow user: %d", resp.StatusCode)
+	}
+
+	authorize := func(scope, state string, session *loginResult) *http.Response {
+		t.Helper()
+		q := url.Values{"response_type": {"code"}, "client_id": {"interactive-app"}, "redirect_uri": {"https://interactive.example/callback"}, "scope": {scope}, "state": {state}, "nonce": {"fixed-nonce"}}
+		req, _ := http.NewRequest(http.MethodGet, server.URL+"/oauth2/authorize?"+q.Encode(), nil)
+		if session != nil {
+			req.AddCookie(&http.Cookie{Name: "sso_session", Value: session.SessionToken})
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	postDecision := func(session loginResult, requestToken, decision string) string {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"request": requestToken, "decision": decision})
+		req, _ := http.NewRequest(http.MethodPost, server.URL+"/oauth2/consent", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CSRF-Token", session.CSRFToken)
+		req.Header.Set("Origin", server.URL)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.AddCookie(&http.Cookie{Name: "sso_session", Value: session.SessionToken})
+		req.AddCookie(&http.Cookie{Name: "sso_csrf", Value: session.CSRFToken})
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		if resp.StatusCode != http.StatusOK || out["redirect"] == "" {
+			t.Fatalf("consent %s: status=%d body=%v", decision, resp.StatusCode, out)
+		}
+		return out["redirect"]
+	}
+
+	start := authorize("openid profile", "original-state", nil)
+	assertNoStore(t, start)
+	start.Body.Close()
+	loginLocation, _ := url.Parse(start.Header.Get("Location"))
+	resume := loginLocation.Query().Get("continue")
+	resumeURL, _ := url.Parse(resume)
+	requestToken := resumeURL.Query().Get("request")
+	if start.StatusCode != http.StatusFound || loginLocation.Path != "/login" || requestToken == "" {
+		t.Fatalf("authorize без сессии не отправил на вход: %d %q", start.StatusCode, start.Header.Get("Location"))
+	}
+
+	flowUser := loginSession(t, "flow-user", "FlowPassword1!")
+	resumeURL.RawQuery += "&state=attacker-state&nonce=attacker-nonce&code_challenge=attacker"
+	req, _ := http.NewRequest(http.MethodGet, server.URL+resumeURL.String(), nil)
+	req.AddCookie(&http.Cookie{Name: "sso_session", Value: flowUser.SessionToken})
+	consentRedirect, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consentRedirect.Body.Close()
+	consentLocation, _ := url.Parse(consentRedirect.Header.Get("Location"))
+	if consentRedirect.StatusCode != http.StatusFound || consentLocation.Path != "/consent" || consentLocation.Query().Get("request") != requestToken {
+		t.Fatalf("после входа не открыт consent: %d %q", consentRedirect.StatusCode, consentRedirect.Header.Get("Location"))
+	}
+
+	approvedResume := postDecision(flowUser, requestToken, "allow")
+	callbackReq, _ := http.NewRequest(http.MethodGet, server.URL+approvedResume, nil)
+	callbackReq.AddCookie(&http.Cookie{Name: "sso_session", Value: flowUser.SessionToken})
+	callbackResp, err := client.Do(callbackReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbackResp.Body.Close()
+	callback, _ := url.Parse(callbackResp.Header.Get("Location"))
+	if callbackResp.StatusCode != http.StatusFound || callback.Query().Get("code") == "" || callback.Query().Get("state") != "original-state" {
+		t.Fatalf("неверный callback после consent: %d %q", callbackResp.StatusCode, callbackResp.Header.Get("Location"))
+	}
+
+	replayReq, _ := http.NewRequest(http.MethodGet, server.URL+approvedResume, nil)
+	replayReq.AddCookie(&http.Cookie{Name: "sso_session", Value: flowUser.SessionToken})
+	replayResp, err := client.Do(replayReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayResp.Body.Close()
+	if replayResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("повторный request принят: %d", replayResp.StatusCode)
+	}
+
+	deniedStart := authorize("openid profile email", "deny-state", &flowUser)
+	deniedStart.Body.Close()
+	deniedConsent, _ := url.Parse(deniedStart.Header.Get("Location"))
+	deniedToken := deniedConsent.Query().Get("request")
+	if deniedStart.StatusCode != http.StatusFound || deniedConsent.Path != "/consent" || deniedToken == "" {
+		t.Fatalf("не открыт consent для расширенного scope: %d %q", deniedStart.StatusCode, deniedStart.Header.Get("Location"))
+	}
+	deniedCallback, _ := url.Parse(postDecision(flowUser, deniedToken, "deny"))
+	if deniedCallback.Query().Get("error") != "access_denied" || deniedCallback.Query().Get("state") != "deny-state" {
+		t.Fatalf("неверный callback отказа: %q", deniedCallback.String())
+	}
+}
+
 func pendingActivationEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, testDatabaseURL)
@@ -742,6 +855,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("rotate client secret: %d %+v", rotateResp.StatusCode, rotated)
 	}
 	created.ClientSecret = rotated.ClientSecret
+	interactiveAuthorizationEndToEnd(t, admin.credential())
 
 	// 5. Authorization Code Flow с session cookie.
 	q := url.Values{"response_type": {"code"}, "client_id": {"test-app"}, "redirect_uri": {"https://client.example/cb"}, "scope": {"openid profile"}, "state": {"xyz"}, "nonce": {"n1"}}

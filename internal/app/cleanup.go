@@ -19,6 +19,7 @@ func startCleanup(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) 
 		`DELETE FROM login_attempts WHERE updated_at < now() - interval '24 hours'`,
 		`DELETE FROM rate_limit_buckets WHERE expires_at < now()`,
 		`DELETE FROM broker_login_states WHERE expires_at < now()`,
+		`DELETE FROM oauth_authorization_requests WHERE expires_at < now()`,
 	}
 	run := func() {
 		for _, q := range statements {

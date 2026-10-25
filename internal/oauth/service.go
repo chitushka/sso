@@ -163,29 +163,37 @@ type AuthorizeResult struct {
 	State    string `json:"state,omitempty"`
 }
 
-func (s *Service) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error) {
-	if in.ResponseType != "code" {
-		return AuthorizeResult{}, errors.New("unsupported response_type")
-	}
+func (s *Service) validateAuthorization(ctx context.Context, in AuthorizeInput) (Client, error) {
 	c, err := s.repo.FindClientByClientID(ctx, in.ClientID)
 	if err != nil {
-		return AuthorizeResult{}, err
+		return Client{}, err
 	}
 	if !c.Enabled {
-		return AuthorizeResult{}, errors.New("client disabled")
+		return Client{}, errors.New("client disabled")
 	}
 	if !contains(c.RedirectURIs, in.RedirectURI) {
-		return AuthorizeResult{}, errors.New("invalid redirect_uri")
+		return Client{}, errors.New("invalid redirect_uri")
+	}
+	if in.ResponseType != "code" {
+		return Client{}, errors.New("unsupported response_type")
 	}
 	if err := validateScope(in.Scope, c.AllowedScopes); err != nil {
-		return AuthorizeResult{}, err
+		return Client{}, err
 	}
 	if c.Type == ClientPublic && (in.CodeChallenge == "" || in.CodeChallengeMethod != "S256") {
-		return AuthorizeResult{}, errors.New("PKCE S256 required")
+		return Client{}, errors.New("PKCE S256 required")
+	}
+	return c, nil
+}
+
+func (s *Service) authorizationSubject(ctx context.Context, in AuthorizeInput) (Client, uuid.UUID, error) {
+	c, err := s.validateAuthorization(ctx, in)
+	if err != nil {
+		return Client{}, uuid.Nil, err
 	}
 	userID, err := s.sessionUser(ctx, in.SessionToken)
 	if err != nil {
-		return AuthorizeResult{}, ErrLoginRequired
+		return Client{}, uuid.Nil, ErrLoginRequired
 	}
 	if !c.SkipConsent {
 		granted := ""
@@ -193,9 +201,13 @@ func (s *Service) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeRe
 			granted = consent.Scopes
 		}
 		if !scopeCovered(in.Scope, granted) {
-			return AuthorizeResult{}, ErrConsentRequired
+			return Client{}, uuid.Nil, ErrConsentRequired
 		}
 	}
+	return c, userID, nil
+}
+
+func (s *Service) issueAuthorization(ctx context.Context, c Client, userID uuid.UUID, in AuthorizeInput) (AuthorizeResult, error) {
 	raw, hash, err := newCode()
 	if err != nil {
 		return AuthorizeResult{}, err
@@ -212,6 +224,123 @@ func (s *Service) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeRe
 	}
 	u.RawQuery = q.Encode()
 	return AuthorizeResult{Redirect: u.String(), Code: raw, State: in.State}, nil
+}
+
+func (s *Service) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error) {
+	c, userID, err := s.authorizationSubject(ctx, in)
+	if err != nil {
+		return AuthorizeResult{}, err
+	}
+	return s.issueAuthorization(ctx, c, userID, in)
+}
+
+func authorizationInput(req AuthorizationRequest, sessionToken string) AuthorizeInput {
+	return AuthorizeInput{ResponseType: req.ResponseType, ClientID: req.ClientID, RedirectURI: req.RedirectURI, Scope: req.Scope, State: req.State, CodeChallenge: req.CodeChallenge, CodeChallengeMethod: req.CodeChallengeMethod, Nonce: req.Nonce, SessionToken: sessionToken}
+}
+
+func interactionRedirect(raw string, err error) string {
+	resume := "/oauth2/authorize?request=" + url.QueryEscape(raw)
+	if errors.Is(err, ErrLoginRequired) {
+		return "/login?continue=" + url.QueryEscape(resume)
+	}
+	return "/consent?request=" + url.QueryEscape(raw)
+}
+
+func (s *Service) saveAuthorizationRequest(ctx context.Context, in AuthorizeInput) (string, error) {
+	raw, hash, err := newCode()
+	if err != nil {
+		return "", err
+	}
+	req := AuthorizationRequest{RequestHash: hash, ResponseType: in.ResponseType, ClientID: in.ClientID, RedirectURI: in.RedirectURI, Scope: in.Scope, State: in.State, CodeChallenge: in.CodeChallenge, CodeChallengeMethod: in.CodeChallengeMethod, Nonce: in.Nonce, ExpiresAt: time.Now().Add(10 * time.Minute)}
+	if err := s.repo.CreateAuthorizationRequest(ctx, req); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// StartAuthorization либо завершает запрос немедленно, либо сохраняет его
+// неизменяемый контекст и возвращает локальную страницу входа или согласия.
+func (s *Service) StartAuthorization(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error) {
+	c, userID, err := s.authorizationSubject(ctx, in)
+	if err == nil {
+		return s.issueAuthorization(ctx, c, userID, in)
+	}
+	if !errors.Is(err, ErrLoginRequired) && !errors.Is(err, ErrConsentRequired) {
+		return AuthorizeResult{}, err
+	}
+	raw, saveErr := s.saveAuthorizationRequest(ctx, in)
+	if saveErr != nil {
+		return AuthorizeResult{}, saveErr
+	}
+	return AuthorizeResult{Redirect: interactionRedirect(raw, err)}, nil
+}
+
+// ResumeAuthorization загружает параметры только из серверного одноразового
+// контекста. Значения из query string после входа не используются.
+func (s *Service) ResumeAuthorization(ctx context.Context, raw, sessionToken string) (AuthorizeResult, error) {
+	hash := hashCode(raw)
+	req, err := s.repo.FindAuthorizationRequest(ctx, hash)
+	if err != nil {
+		return AuthorizeResult{}, errors.New("invalid or expired authorization request")
+	}
+	in := authorizationInput(req, sessionToken)
+	c, userID, err := s.authorizationSubject(ctx, in)
+	if errors.Is(err, ErrLoginRequired) || errors.Is(err, ErrConsentRequired) {
+		return AuthorizeResult{Redirect: interactionRedirect(raw, err)}, nil
+	}
+	if err != nil {
+		return AuthorizeResult{}, err
+	}
+	if _, err := s.repo.ConsumeAuthorizationRequest(ctx, hash); err != nil {
+		return AuthorizeResult{}, errors.New("invalid or expired authorization request")
+	}
+	return s.issueAuthorization(ctx, c, userID, in)
+}
+
+func authorizationErrorDetails(err error) (string, string) {
+	switch {
+	case errors.Is(err, ErrInvalidScope):
+		return "invalid_scope", "requested scope is not allowed for this client"
+	case err != nil && err.Error() == "unsupported response_type":
+		return "unsupported_response_type", "response_type is not supported"
+	case err != nil && err.Error() == "PKCE S256 required":
+		return "invalid_request", "PKCE S256 is required for public clients"
+	case errors.Is(err, storage.ErrNotFound), err != nil && (err.Error() == "client disabled" || err.Error() == "invalid redirect_uri" || err.Error() == "invalid or expired authorization request"):
+		return "invalid_request", "authorization request is invalid or expired"
+	default:
+		return "server_error", "authorization request could not be processed"
+	}
+}
+
+func authorizationErrorURL(in AuthorizeInput, code, description string) string {
+	u, _ := url.Parse(in.RedirectURI)
+	q := u.Query()
+	q.Set("error", code)
+	q.Set("error_description", description)
+	if in.State != "" {
+		q.Set("state", in.State)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// AuthorizationErrorRedirect возвращает redirect только после повторной
+// проверки зарегистрированного redirect_uri.
+func (s *Service) AuthorizationErrorRedirect(ctx context.Context, in AuthorizeInput, err error) (string, bool) {
+	c, findErr := s.repo.FindClientByClientID(ctx, in.ClientID)
+	if findErr != nil || !c.Enabled || !contains(c.RedirectURIs, in.RedirectURI) {
+		return "", false
+	}
+	code, description := authorizationErrorDetails(err)
+	return authorizationErrorURL(in, code, description), true
+}
+
+func (s *Service) AuthorizationRequestErrorRedirect(ctx context.Context, raw string, err error) (string, bool) {
+	req, findErr := s.repo.FindAuthorizationRequest(ctx, hashCode(raw))
+	if findErr != nil {
+		return "", false
+	}
+	return s.AuthorizationErrorRedirect(ctx, authorizationInput(req, ""), err)
 }
 
 type TokenInput struct {
@@ -495,6 +624,43 @@ func (s *Service) GrantConsent(ctx context.Context, sessionToken, clientID, scop
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: &userID, Action: "consent_granted", TargetType: "oauth_client", TargetID: c.ClientID})
 	return nil
+}
+
+func (s *Service) GetAuthorizationConsentInfo(ctx context.Context, sessionToken, raw string) (ConsentInfo, error) {
+	req, err := s.repo.FindAuthorizationRequest(ctx, hashCode(raw))
+	if err != nil {
+		return ConsentInfo{}, errors.New("invalid or expired authorization request")
+	}
+	return s.GetConsentInfo(ctx, sessionToken, req.ClientID, req.Scope)
+}
+
+func (s *Service) GrantAuthorizationConsent(ctx context.Context, sessionToken, raw string) error {
+	req, err := s.repo.FindAuthorizationRequest(ctx, hashCode(raw))
+	if err != nil {
+		return errors.New("invalid or expired authorization request")
+	}
+	return s.GrantConsent(ctx, sessionToken, req.ClientID, req.Scope)
+}
+
+// DenyAuthorization потребляет одноразовый запрос и возвращает протокольную
+// ошибку клиенту, сохраняя исходный state.
+func (s *Service) DenyAuthorization(ctx context.Context, sessionToken, raw string) (string, error) {
+	hash := hashCode(raw)
+	req, err := s.repo.FindAuthorizationRequest(ctx, hash)
+	if err != nil {
+		return "", errors.New("invalid or expired authorization request")
+	}
+	if _, err := s.sessionUser(ctx, sessionToken); err != nil {
+		return "", err
+	}
+	in := authorizationInput(req, "")
+	if _, err := s.validateAuthorization(ctx, in); err != nil {
+		return "", err
+	}
+	if _, err := s.repo.ConsumeAuthorizationRequest(ctx, hash); err != nil {
+		return "", errors.New("invalid or expired authorization request")
+	}
+	return authorizationErrorURL(in, "access_denied", "the user denied the authorization request"), nil
 }
 
 type RevokeInput struct{ Token, ClientID, ClientSecret string }
