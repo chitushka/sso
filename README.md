@@ -142,6 +142,9 @@ POST /api/v1/bootstrap
 POST /api/v1/auth/login
 POST /api/v1/auth/logout
 GET  /api/v1/auth/me
+GET  /api/v1/auth/sessions
+DELETE /api/v1/auth/sessions/{id}
+DELETE /api/v1/auth/sessions
 ```
 
 ```json
@@ -153,6 +156,8 @@ GET  /api/v1/auth/me
 ```
 
 Первому пользователю назначается роль `admin`. Пароль содержит 12–128 символов. Панель использует HttpOnly cookie и CSRF-защиту; Bearer-токены не хранятся в browser storage.
+
+Self-service маршруты `/api/v1/auth/me` и `/api/v1/auth/sessions` принимают как действующую browser-сессию, так и административный Bearer-токен. Это позволяет SPA восстановить пользователя после перезагрузки, показать его активные сеансы, отозвать отдельный сеанс или выполнить выход на всех устройствах. Для `DELETE` с cookie обязательны совпадающий double-submit CSRF-токен, same-origin `Origin` и отсутствие `Sec-Fetch-Site: cross-site`; Bearer-запросы сохраняют прежнее поведение. Cookie-сессия при каждом запросе проверяется в PostgreSQL, поэтому отзыв, истечение, блокировка или удаление учётной записи применяются немедленно.
 
 ## OAuth 2.0 и OpenID Connect
 

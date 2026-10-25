@@ -54,7 +54,7 @@ func ValidRequestOrigin(r *http.Request) bool {
 	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		return true
+		return false
 	}
 	u, err := url.Parse(origin)
 	if err != nil {

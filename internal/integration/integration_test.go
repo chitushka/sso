@@ -122,6 +122,10 @@ func doJSON(t *testing.T, method, path, credential string, body any, out any) *h
 			req.AddCookie(&http.Cookie{Name: "sso_csrf", Value: parts[1]})
 			req.Header.Set("X-CSRF-Token", parts[1])
 		}
+		if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions {
+			req.Header.Set("Origin", server.URL)
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+		}
 	} else if credential != "" {
 		req.Header.Set("Authorization", "Bearer "+credential)
 	}
@@ -321,6 +325,89 @@ func interactiveAuthorizationEndToEnd(t *testing.T, adminCredential string) {
 	deniedCallback, _ := url.Parse(postDecision(flowUser, deniedToken, "deny"))
 	if deniedCallback.Query().Get("error") != "access_denied" || deniedCallback.Query().Get("state") != "deny-state" {
 		t.Fatalf("неверный callback отказа: %q", deniedCallback.String())
+	}
+}
+
+func selfServiceSessionsEndToEnd(t *testing.T, adminCredential string) {
+	t.Helper()
+	if resp := doJSON(t, http.MethodPost, "/api/v1/users", adminCredential, map[string]string{
+		"username": "session-user", "email": "session-user@example.org", "password": "SessionPassword1!",
+	}, nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create session user: %d", resp.StatusCode)
+	}
+
+	first := loginSession(t, "session-user", "SessionPassword1!")
+	second := loginSession(t, "session-user", "SessionPassword1!")
+	var me users.User
+	if resp := doJSON(t, http.MethodGet, "/api/v1/auth/me", first.credential(), nil, &me); resp.StatusCode != http.StatusOK || me.Username != "session-user" {
+		t.Fatalf("restore SPA by cookie: status=%d user=%+v", resp.StatusCode, me)
+	}
+	var activeSessions []auth.Session
+	if resp := doJSON(t, http.MethodGet, "/api/v1/auth/sessions", first.credential(), nil, &activeSessions); resp.StatusCode != http.StatusOK || len(activeSessions) != 2 {
+		t.Fatalf("list own sessions: status=%d sessions=%d", resp.StatusCode, len(activeSessions))
+	}
+	targetID := activeSessions[0].ID.String()
+
+	deleteSession := func(session loginResult, csrf, origin, fetchSite string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/auth/sessions/"+targetID, nil)
+		req.AddCookie(&http.Cookie{Name: "sso_session", Value: session.SessionToken})
+		req.AddCookie(&http.Cookie{Name: "sso_csrf", Value: session.CSRFToken})
+		if csrf != "" {
+			req.Header.Set("X-CSRF-Token", csrf)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if fetchSite != "" {
+			req.Header.Set("Sec-Fetch-Site", fetchSite)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if status := deleteSession(first, "", server.URL, "same-origin"); status != http.StatusForbidden {
+		t.Fatalf("DELETE session без CSRF: status=%d", status)
+	}
+	if status := deleteSession(first, first.CSRFToken, "https://evil.example", "cross-site"); status != http.StatusForbidden {
+		t.Fatalf("cross-site DELETE session: status=%d", status)
+	}
+	if status := deleteSession(first, first.CSRFToken, server.URL, "same-origin"); status != http.StatusOK {
+		t.Fatalf("revoke own session: status=%d", status)
+	}
+
+	firstStatus := doJSON(t, http.MethodGet, "/api/v1/auth/me", first.credential(), nil, nil).StatusCode
+	secondStatus := doJSON(t, http.MethodGet, "/api/v1/auth/me", second.credential(), nil, nil).StatusCode
+	if !((firstStatus == http.StatusUnauthorized && secondStatus == http.StatusOK) || (firstStatus == http.StatusOK && secondStatus == http.StatusUnauthorized)) {
+		t.Fatalf("отозванная сессия не заблокирована немедленно: first=%d second=%d", firstStatus, secondStatus)
+	}
+	remaining := first
+	if firstStatus == http.StatusUnauthorized {
+		remaining = second
+	}
+
+	expired := loginSession(t, "session-user", "SessionPassword1!")
+	pool, err := pgxpool.New(context.Background(), testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `UPDATE sessions SET expires_at=now()-interval '1 second' WHERE token_hash=$1`, auth.HashSessionToken(expired.SessionToken)); err != nil {
+		pool.Close()
+		t.Fatal(err)
+	}
+	pool.Close()
+	if status := doJSON(t, http.MethodGet, "/api/v1/auth/me", expired.credential(), nil, nil).StatusCode; status != http.StatusUnauthorized {
+		t.Fatalf("истёкшая сессия принята: status=%d", status)
+	}
+
+	if resp := doJSON(t, http.MethodDelete, "/api/v1/auth/sessions", remaining.credential(), nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("revoke all own sessions: status=%d", resp.StatusCode)
+	}
+	if status := doJSON(t, http.MethodGet, "/api/v1/auth/me", remaining.credential(), nil, nil).StatusCode; status != http.StatusUnauthorized {
+		t.Fatalf("сессия действует после revoke all: status=%d", status)
 	}
 }
 
@@ -856,6 +943,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	created.ClientSecret = rotated.ClientSecret
 	interactiveAuthorizationEndToEnd(t, admin.credential())
+	selfServiceSessionsEndToEnd(t, admin.credential())
 
 	// 5. Authorization Code Flow с session cookie.
 	q := url.Values{"response_type": {"code"}, "client_id": {"test-app"}, "redirect_uri": {"https://client.example/cb"}, "scope": {"openid profile"}, "state": {"xyz"}, "nonce": {"n1"}}
@@ -930,8 +1018,8 @@ func TestEndToEnd(t *testing.T) {
 		if _, err := pool.Exec(context.Background(), "UPDATE users SET status=$2 WHERE username=$1", username, userStatus); err != nil {
 			t.Fatal(err)
 		}
-		if status, _ := requestAuthorizationCode(t, userSession.SessionToken); status != http.StatusUnauthorized {
-			t.Fatalf("%s user authorize must return 401, got %d", userStatus, status)
+		if status, code := requestAuthorizationCode(t, userSession.SessionToken); status != http.StatusFound || code != "" {
+			t.Fatalf("%s user authorize must restart login without a code, got status=%d code=%q", userStatus, status, code)
 		}
 		var revoked bool
 		if err := pool.QueryRow(context.Background(), "SELECT revoked_at IS NOT NULL FROM sessions WHERE token_hash=$1", auth.HashSessionToken(userSession.SessionToken)).Scan(&revoked); err != nil {
@@ -973,8 +1061,8 @@ func TestEndToEnd(t *testing.T) {
 	if resp := doJSON(t, http.MethodPut, "/api/v1/users/"+revokeUser.ID.String(), admin.credential(), updateUser, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("block user: %d", resp.StatusCode)
 	}
-	if status, _ := requestAuthorizationCode(t, revokeSession.SessionToken); status != http.StatusUnauthorized {
-		t.Fatalf("session remained active after block: %d", status)
+	if status, code := requestAuthorizationCode(t, revokeSession.SessionToken); status != http.StatusFound || code != "" {
+		t.Fatalf("session remained active after block: status=%d code=%q", status, code)
 	}
 	if status, body := tokenReq(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {oldRefresh}, "client_id": {"test-app"}, "client_secret": {created.ClientSecret}}); status != http.StatusBadRequest || body["error"] != "invalid_grant" {
 		t.Fatalf("refresh token remained active after block: %d %v", status, body)

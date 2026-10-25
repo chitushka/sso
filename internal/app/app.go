@@ -116,7 +116,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, version st
 	bearer := auth.ProtectedAuth(tokens, sessionRepo, userRepo, accessCache)
 	r.With(bearer, require("metrics", "read")).Get("/metrics", metrics.Expose)
 	bootstrap.RegisterRoutes(r, bootstrapSvc)
-	auth.RegisterRoutes(r, authSvc, userRepo, sessionRepo, tokens, accessCache)
+	auth.RegisterRoutes(r, authSvc, userRepo, sessionRepo, bearer, accessCache)
 	users.RegisterRoutes(r, userSvc, bearer, require)
 	ldap.RegisterRoutes(r, ldapSvc, bearer, require)
 	oauth.RegisterRoutes(r, oauthSvc, bearer, require)
